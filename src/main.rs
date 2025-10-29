@@ -8,14 +8,15 @@ use quick_xml::events::Event;
 use quick_xml::Error as XmlError;
 use quick_xml::Reader;
 
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 fn main() {
-    let mut file = File::open("data/test_dict.mdx").expect("Failed to open file");
+    let mut file = File::open("data/test_dict.mdx")
+        .expect("Failed to open file");
 
     // MDX format: 4-byte big-endian integer for header length.
-    let mut header_length_bytes = [0; 4];
-    file.read_exact(&mut header_length_bytes)
+    let header_length = file
+        .read_u32::<BigEndian>()
         .expect("Failed to read header length");
-    let header_length = u32::from_be_bytes(header_length_bytes);
     println!("Reading header length: OK. ({} bytes)", header_length);
 
     let mut header_content_bytes = vec![0; header_length as usize];
@@ -24,13 +25,13 @@ fn main() {
     println!("Reading header content: OK.");
 
     // MDX format: 4-byte little-endian Adler32 checksum of the header.
-    let mut checksum_bytes_from_file = [0; 4];
-    file.read_exact(&mut checksum_bytes_from_file)
+    let checksum_from_file = file
+        .read_u32::<LittleEndian>()
         .expect("Failed to read header checksum");
-    let checksum_from_file = u32::from_le_bytes(checksum_bytes_from_file);
     println!("Reading header checksum: OK.");
 
-    let calculated_checksum = adler32(&header_content_bytes[..]).expect("Failed to calculate checksum");
+    let calculated_checksum = adler32(&header_content_bytes[..])
+        .expect("Failed to calculate checksum");
     assert_eq!(
         calculated_checksum,
         checksum_from_file,
@@ -88,15 +89,13 @@ fn main() {
             _ => (),
         }
     };
-
+    buf.clear();
+    
     // The parsing operation returns a Result, which we handle once here.
     let header_attrs = header_attrs_result.expect("Failed to parse XML attributes");
-
     println!(
         "Parsing header attributes: OK. (Found {} attributes)",
         header_attrs.len()
     );
     println!("{:#?}", header_attrs);
-
-    buf.clear();
 }
