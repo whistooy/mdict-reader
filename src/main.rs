@@ -14,19 +14,20 @@ use ripemd::{Digest, Ripemd128};
 
 // --- Data Structures ---
 
-/// Defines the known MDict encryption schemes.
-#[derive(Debug, PartialEq)]
-pub enum EncryptionType {
-    None,
-    RecordBlock,
-    KeyIndex,
+/// Represents the MDict encryption bitfield.
+#[derive(Debug, Default)]
+pub struct EncryptionFlags {
+    /// Corresponds to the 0x01 bitflag.
+    pub encrypt_record_blocks: bool,
+    /// Corresponds to the 0x02 bitflag.
+    pub encrypt_key_index: bool,
 }
 
 /// Structured metadata parsed from the MDict header XML.
 #[derive(Debug)]
 pub struct MdictHeader {
     pub version: f32,
-    pub encryption_type: EncryptionType,
+    pub encryption_flags: EncryptionFlags,
     pub encoding: &'static Encoding,
     pub number_width: usize,
     pub title: String,
@@ -82,11 +83,13 @@ impl MdictHeader {
             .and_then(|label| Encoding::for_label(label.as_bytes()))
             .unwrap_or(encoding_rs::UTF_8);
 
-        let encryption_type = match attrs.get("Encrypted").map(String::as_str) {
-            Some("Yes") | Some("1") => EncryptionType::RecordBlock,
-            Some("2") => EncryptionType::KeyIndex,
-            _ => EncryptionType::None,
-        };
+        let encryption_flags = attrs.get("Encrypted")
+            .and_then(|s| s.parse::<u8>().ok())
+            .map(|flag_val| EncryptionFlags {
+                encrypt_record_blocks: (flag_val & 0x01) != 0,
+                encrypt_key_index: (flag_val & 0x02) != 0,
+            })
+            .unwrap_or_default(); 
 
         let title = attrs.get("Title").cloned().unwrap_or_else(|| "Untitled Dictionary".to_string());
         let description = attrs.get("Description").cloned();
@@ -94,7 +97,7 @@ impl MdictHeader {
         
         Ok(MdictHeader {
             version,
-            encryption_type,
+            encryption_flags,
             encoding,
             number_width,
             title,
@@ -315,7 +318,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // MDX Format (v2): Block header is [4-byte compression type][4-byte checksum].
         let mut decrypted_payload: Vec<u8>; // Must live long enough for the borrow below.
 
-        let payload_to_decompress = if mdict_header.encryption_type == EncryptionType::KeyIndex {
+        let payload_to_decompress = if mdict_header.encryption_flags.encrypt_key_index {
             let key = derive_key_for_v2_index(&key_index_comp_bytes);
             decrypted_payload = key_index_comp_bytes[8..].to_vec();
             fast_decrypt(&mut decrypted_payload, &key);
