@@ -2,15 +2,21 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Cursor};
+
 // --- External Crate Imports ---
 use adler32::adler32;
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
 use encoding_rs::{Encoding, UTF_16LE, UTF_16BE};
 use flate2::read::ZlibDecoder;
+use hex;
 use lzokay::decompress::decompress as lzokay_decompress;
 use quick_xml::{events::Event, Reader};
 use ripemd::{Digest, Ripemd128};
+use salsa20::{
+    cipher::{KeyIvInit, StreamCipher},
+    Salsa8,
+};
 
 // --- Data Structures ---
 
@@ -59,6 +65,23 @@ pub struct Headword {
     pub text: String,
 }
 
+/// Metadata for the entire record block section.
+#[derive(Debug)]
+pub struct RecordBlockInfo {
+    pub num_record_blocks: u64,
+    pub num_entries: u64,
+    pub record_index_len: u64,
+    pub record_blocks_len: u64,
+}
+
+/// Metadata for a single record block.
+#[derive(Debug)]
+pub struct RecordBlock {
+    pub compressed_size: u64,
+    pub decompressed_size: u64,
+}
+
+
 // --- Implementation & Helpers ---
 
 impl MdictHeader {
@@ -89,12 +112,12 @@ impl MdictHeader {
                 encrypt_record_blocks: (flag_val & 0x01) != 0,
                 encrypt_key_index: (flag_val & 0x02) != 0,
             })
-            .unwrap_or_default(); 
+            .unwrap_or_default();
 
         let title = attrs.get("Title").cloned().unwrap_or_else(|| "Untitled Dictionary".to_string());
         let description = attrs.get("Description").cloned();
         let stylesheet = attrs.get("StyleSheet").cloned();
-        
+
         Ok(MdictHeader {
             version,
             encryption_flags,
@@ -123,6 +146,40 @@ fn read_small_number(reader: &mut impl Read, number_width: usize) -> Result<u64,
         1 => reader.read_u8().map(u64::from)?,
         _ => return Err("Unsupported number width for read_small_number.".into()),
     })
+}
+
+/// Derives the master encryption key from a user-provided passcode.
+fn derive_master_key(reg_code: &[u8], user_id: &[u8]) -> Result<[u8; 16], Box<dyn Error>> {
+    // MDX Algorithm: The user ID is hashed with Ripemd128 to form a 16-byte key.
+    let mut hasher = Ripemd128::new();
+    hasher.update(user_id);
+    let user_id_digest: [u8; 16] = hasher.finalize().into();
+
+    // MDX Algorithm (Salsa20): Salsa20 requires a 32-byte key. The 16-byte Ripemd128
+    // digest is duplicated to create the required 32-byte key.
+    let mut salsa_key = [0u8; 32];
+    salsa_key[..16].copy_from_slice(&user_id_digest);
+    salsa_key[16..].copy_from_slice(&user_id_digest);
+
+    // MDX Algorithm: The registration code is decrypted with Salsa20/8 to yield the final master key.
+    let mut key = reg_code.to_vec();
+    let mut cipher = Salsa8::new((&salsa_key).into(), &([0u8; 8]).into());
+    cipher.apply_keystream(&mut key);
+
+    let final_key: [u8; 16] = key.try_into()
+        .map_err(|_| "Derived key was not 16 bytes long.")?;
+    Ok(final_key)
+}
+
+/// Decrypts data using the Salsa20/8 stream cipher.
+fn salsa_decrypt(data: &mut [u8], key16: &[u8; 16]) {
+    // MDX Algorithm (Salsa20): The 16-byte key is duplicated to form the 32-byte key required by the cipher.
+    let mut salsa_key = [0u8; 32];
+    salsa_key[..16].copy_from_slice(key16);
+    salsa_key[16..].copy_from_slice(key16);
+
+    let mut cipher = Salsa8::new((&salsa_key).into(), &([0u8; 8]).into());
+    cipher.apply_keystream(data);
 }
 
 /// Implements the v2 key index key derivation algorithm using RIPEMD128.
@@ -161,7 +218,7 @@ fn parse_key_text(reader: &mut &[u8], mdict_header: &MdictHeader) -> Result<(), 
     // MDX Format (v2): A 1-unit terminator follows the text (1 byte for UTF-8, 2 for UTF-16).
     // MDX Format (v1): No terminator is used.
     let terminator_len_in_units = if mdict_header.version < 2.0 { 0 } else { 1 };
-    
+
     // The width of a single "unit" in bytes depends on the encoding.
     let unit_width_in_bytes = if mdict_header.encoding == UTF_16LE || mdict_header.encoding == UTF_16BE { 2 } else { 1 };
 
@@ -177,6 +234,30 @@ fn parse_key_text(reader: &mut &[u8], mdict_header: &MdictHeader) -> Result<(), 
     Ok(())
 }
 
+/// Performs decryption on a raw payload using the specified algorithm.
+fn perform_decryption(
+    payload: &[u8],
+    encryption_type: u8,
+    key16: &[u8; 16],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    Ok(match encryption_type {
+        // MDX Encryption: Type 0 is no encryption.
+        0 => payload.to_vec(),
+        // MDX Encryption: Type 1 is FastDecrypt (XOR).
+        1 => {
+            let mut decrypted = payload.to_vec();
+            fast_decrypt(&mut decrypted, key16);
+            decrypted
+        },
+        // MDX Encryption: Type 2 is Salsa20/8.
+        2 => {
+            let mut decrypted = payload.to_vec();
+            salsa_decrypt(&mut decrypted, key16);
+            decrypted
+        },
+        _ => return Err(format!("Unsupported block encryption type: {}", encryption_type).into()),
+    })
+}
 
 /// Performs decompression on a raw payload using the specified algorithm.
 fn perform_decompression(
@@ -205,6 +286,45 @@ fn perform_decompression(
 
     // This assertion is critical for confirming the integrity of the decompressed data.
     assert_eq!(decompressed_bytes.len() as u64, decompressed_size, "Decompressed size mismatch.");
+    Ok(decompressed_bytes)
+}
+
+/// A universal decoder for both key and record blocks, orchestrating decryption and decompression.
+fn decode_block(
+    compressed_block: &[u8],
+    decompressed_size: u64,
+    master_key: Option<&[u8; 16]>,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    // MDX Format: First 4 bytes define compression and encryption type.
+    let info = LittleEndian::read_u32(&compressed_block[0..4]);
+    let compression_type = (info & 0xF) as u8;
+    let encryption_type = ((info >> 4) & 0xF) as u8;
+
+    // MDX Format: Next 4 bytes are the Adler32 checksum.
+    let checksum_from_header = BigEndian::read_u32(&compressed_block[4..8]);
+    let payload = &compressed_block[8..];
+
+    // MDX Format: The decryption key is either the provided master key, or a key
+    // derived from the block's checksum if no master key is available.
+    let decryption_key_16: [u8; 16] = match master_key {
+        Some(key) => *key,
+        None => {
+            let mut hasher = Ripemd128::new();
+            hasher.update(&compressed_block[4..8]);
+            hasher.finalize().into()
+        }
+    };
+
+    // First, decrypt the payload.
+    let decrypted_payload = perform_decryption(payload, encryption_type, &decryption_key_16)?;
+
+    // Second, decompress the (now decrypted) payload.
+    let decompressed_bytes = perform_decompression(&decrypted_payload, compression_type as u32, decompressed_size)?;
+
+    // Finally, the checksum is verified against the fully decompressed data.
+    let calculated_checksum = adler32(&decompressed_bytes[..])?;
+    assert_eq!(calculated_checksum, checksum_from_header, "Block checksum mismatch!");
+    
     Ok(decompressed_bytes)
 }
 
@@ -239,24 +359,28 @@ fn read_null_terminated_string(
 fn main() -> Result<(), Box<dyn Error>> {
     let mut file = File::open("data/test_dict.mdx")?;
 
+    // MDX Format: For encrypted dictionaries, a passcode (registration code and user ID) is required.
+    // In a real application, this would be provided by the user.
+    let passcode: Option<(&str, &str)> = None; // Some(("0123456789ABCDEF0123456789ABCDEF", "example@example.com"))
+
     // --- 1. HEADER ---
     println!("Processing Header Block: START.");
     // MDX Format: 4-byte big-endian integer specifying header length.
     let header_len = file.read_u32::<BigEndian>()?;
     let mut header_bytes = vec![0; header_len as usize];
     file.read_exact(&mut header_bytes)?;
-    
+
     // MDX Format: 4-byte little-endian Adler32 checksum of the (unencoded) header bytes.
     let checksum_from_file = file.read_u32::<LittleEndian>()?;
     let calculated_checksum = adler32(&header_bytes[..])?;
     assert_eq!(calculated_checksum, checksum_from_file, "Header checksum mismatch!");
-    
+
     // MDX Format: The header text itself is always UTF-16LE.
     let (decoded_header, _, _) = UTF_16LE.decode(&header_bytes);
-    
+
     // Some MDX files contain invalid control characters in the XML; we filter them.
     let sanitized_header: String = decoded_header.chars().filter(|c| !c.is_control() || c.is_whitespace()).collect();
-    
+
     let mut xml_reader = Reader::from_str(&sanitized_header);
     let mut buf = Vec::new();
     let header_attrs = loop {
@@ -277,10 +401,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             _ => (),
         }
     };
-    
+
     let mdict_header = MdictHeader::from_attributes(&header_attrs)?;
     println!("Processing Header Block: OK.");
     println!("{:#?}", mdict_header);
+
+    // --- 1.5. MASTER KEY DERIVATION ---
+    // If a passcode is provided and the dictionary is encrypted, derive the master key.
+    let master_key = if let Some((reg_code_hex, user_id_str)) = passcode {
+        if mdict_header.encryption_flags.encrypt_record_blocks {
+            println!("Deriving master key from passcode...");
+            let reg_code = hex::decode(reg_code_hex)?;
+            Some(derive_master_key(&reg_code, user_id_str.as_bytes())?)
+        } else {
+            None // No need for a key if not encrypted.
+        }
+    } else {
+        None
+    };
 
     // --- 2. KEY BLOCK INFO ---
     println!("Processing Key Block Info: START.");
@@ -289,6 +427,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let num_bytes = if mdict_header.version >= 2.0 { 40 } else { 16 };
     let mut key_block_info_bytes = vec![0; num_bytes];
     file.read_exact(&mut key_block_info_bytes)?;
+
+    // MDX Format (Encrypted): The entire key block info section is encrypted with Salsa20
+    // if a master key is present. It must be decrypted before parsing.
+    if let Some(ref key) = master_key {
+        println!("Decrypting Key Block Info with Salsa20...");
+        salsa_decrypt(&mut key_block_info_bytes, key);
+    }
 
     // MDX Format (v2.0+): This info block is followed by its own 4-byte Adler32 checksum.
     if mdict_header.version >= 2.0 {
@@ -340,13 +485,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         key_index_comp_bytes
     };
     println!("Processing Key Index: OK.");
-    
+
     // --- 4. PARSE KEY INDEX METADATA ---
     println!("Parsing Key Index Metadata: START.");
     let mut key_blocks: Vec<KeyBlock> = Vec::new();
     let mut reader = &key_index_decomp_bytes[..];
     let mut calculated_num_entries = 0;
-    
+
     while !reader.is_empty() {
         // MDX Format: Each entry in the key index describes one key block.
         let num_entries_in_block = read_number(&mut reader, mdict_header.number_width)?;
@@ -356,14 +501,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         // We parse them to advance the reader but discard the content.
         parse_key_text(&mut reader, &mdict_header)?; // First key
         parse_key_text(&mut reader, &mdict_header)?; // Last key
-        
+
         // MDX Format: The entry concludes with the compressed and decompressed sizes of the key block.
         let compressed_size = read_number(&mut reader, mdict_header.number_width)?;
         let decompressed_size = read_number(&mut reader, mdict_header.number_width)?;
 
         key_blocks.push(KeyBlock { compressed_size, decompressed_size });
     }
-    
+
     assert_eq!(calculated_num_entries, key_block_info.num_entries, "Mismatch in total entry count!");
     println!("Parsing Key Index Metadata: OK. (Found {} key blocks)", key_blocks.len());
 
@@ -371,23 +516,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Processing Key Blocks: START.");
     let mut all_headwords: Vec<Headword> = Vec::new();
 
+    // The entire collection of key blocks is read into memory at once.
+    let mut key_blocks_data = vec![0; key_block_info.key_blocks_len as usize];
+    file.read_exact(&mut key_blocks_data)?;
+    let mut key_blocks_cursor = Cursor::new(key_blocks_data);
+
     for key_block_meta in key_blocks.iter() {
         let mut compressed_bytes = vec![0; key_block_meta.compressed_size as usize];
-        file.read_exact(&mut compressed_bytes)?;
+        key_blocks_cursor.read_exact(&mut compressed_bytes)?;
 
-        // MDX Format (v1/v2): Block header is [4-byte compression type][4-byte checksum].
-        let compression_type = LittleEndian::read_u32(&compressed_bytes[0..4]);
-        let checksum_from_header = BigEndian::read_u32(&compressed_bytes[4..8]);
-        
-        let decompressed_bytes = perform_decompression(
-            &compressed_bytes[8..],
-            compression_type,
+        // The universal block decoder handles any encryption on the key blocks.
+        let decompressed_bytes = decode_block(
+            &compressed_bytes,
             key_block_meta.decompressed_size,
+            master_key.as_ref(),
         )?;
-
-        // MDX Format (v1/v2): Checksum is verified against the DECOMPRESSED data.
-        let calculated_checksum = adler32(&decompressed_bytes[..])?;
-        assert_eq!(calculated_checksum, checksum_from_header, "Key block checksum mismatch!");
 
         let mut block_reader = &decompressed_bytes[..];
         while !block_reader.is_empty() {
@@ -397,9 +540,66 @@ fn main() -> Result<(), Box<dyn Error>> {
             all_headwords.push(Headword { id, text });
         }
     }
-    
+
     assert_eq!(key_block_info.num_entries, all_headwords.len() as u64, "Final headword count does not match expected total!");
     println!("Processing Key Blocks: OK. (Total headwords: {})", all_headwords.len());
+
+    // --- 6. READ RECORD BLOCK INFO ---
+    println!("Processing Record Block Info: START.");
+    // MDX Format: This info block is read directly from the file stream. Its structure
+    // mirrors the key block info and is not checksummed.
+    let record_block_info = RecordBlockInfo {
+        num_record_blocks: read_number(&mut file, mdict_header.number_width)?,
+        num_entries: read_number(&mut file, mdict_header.number_width)?,
+        record_index_len: read_number(&mut file, mdict_header.number_width)?,
+        record_blocks_len: read_number(&mut file, mdict_header.number_width)?,
+    };
+
+    // Sanity check: the number of entries should be consistent across the file.
+    assert_eq!(record_block_info.num_entries, key_block_info.num_entries, "Record and key entry counts do not match!");
+    println!("Processing Record Block Info: OK.");
+    println!("{:#?}", record_block_info);
+
+    // --- 7. PARSE RECORD BLOCK INDEX ---
+    println!("Parsing Record Block Index: START.");
+    // MDX Format: This is a simple list of metadata for each record block.
+    // Unlike the key index, it's not compressed and contains no headword text.
+    let mut record_block_index_bytes = vec![0; record_block_info.record_index_len as usize];
+    file.read_exact(&mut record_block_index_bytes)?;
+
+    let mut reader = &record_block_index_bytes[..];
+    let mut record_blocks: Vec<RecordBlock> = Vec::new();
+    while !reader.is_empty() {
+        // MDX Format: Each entry defines the size of one record block.
+        let compressed_size = read_number(&mut reader, mdict_header.number_width)?;
+        let decompressed_size = read_number(&mut reader, mdict_header.number_width)?;
+        record_blocks.push(RecordBlock { compressed_size, decompressed_size });
+    }
+
+    assert_eq!(record_blocks.len() as u64, record_block_info.num_record_blocks, "Mismatch in record block count!");
+    println!("Parsing Record Block Index: OK. (Found {} record blocks)", record_blocks.len());
+    
+    // --- 8. DECOMPRESS ALL RECORD BLOCKS ---
+    println!("Processing Record Blocks: START.");
+    let total_decomp_size: usize = record_blocks.iter().map(|b| b.decompressed_size as usize).sum();
+    let mut all_records_decompressed = Vec::with_capacity(total_decomp_size);
+
+    for record_block_meta in record_blocks.iter() {
+        let mut compressed_bytes = vec![0; record_block_meta.compressed_size as usize];
+        file.read_exact(&mut compressed_bytes)?;
+
+        // The universal block decoder handles any encryption on the record blocks.
+        let decompressed_bytes = decode_block(
+            &compressed_bytes,
+            record_block_meta.decompressed_size,
+            master_key.as_ref(),
+        )?;
+
+        all_records_decompressed.extend_from_slice(&decompressed_bytes);
+    }
+
+    assert_eq!(all_records_decompressed.len(), total_decomp_size, "Final decompressed size does not match expected size!");
+    println!("Processing Record Blocks: OK. (Total decompressed size: {} bytes)", all_records_decompressed.len());
 
     Ok(())
 }
