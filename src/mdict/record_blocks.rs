@@ -1,0 +1,135 @@
+//! Record block parsing (actual dictionary content)
+
+use std::error::Error;
+use std::fs::File;
+use std::io::Read;
+use super::models::{MdictHeader, KeyBlockInfo, RecordBlockInfo, RecordBlock};
+use super::{utils, decoder};
+
+/// Parse record block info section.
+/// 
+/// Structure (both v1.x and v2.x):
+/// - Number of record blocks
+/// - Number of entries
+/// - Record index length
+/// - Record blocks total length
+/// 
+/// Not encrypted, no checksum.
+pub fn parse_info(
+    file: &mut File,
+    header: &MdictHeader,
+    key_info: &KeyBlockInfo,
+) -> Result<RecordBlockInfo, Box<dyn Error>> {
+    println!("=== Parsing Record Block Info ===");
+    
+    let num_record_blocks = utils::read_number(file, header.number_width)?;
+    let num_entries = utils::read_number(file, header.number_width)?;
+    let record_index_len = utils::read_number(file, header.number_width)?;
+    let record_blocks_len = utils::read_number(file, header.number_width)?;
+    
+    // Sanity check: entry count should match key blocks
+    if num_entries != key_info.num_entries {
+        return Err(format!(
+            "Record entry count ({}) doesn't match key entry count ({})",
+            num_entries, key_info.num_entries
+        ).into());
+    }
+    
+    println!("Record block info: {} blocks, {} entries", num_record_blocks, num_entries);
+    
+    Ok(RecordBlockInfo {
+        num_record_blocks,
+        num_entries,
+        record_index_len,
+        record_blocks_len,
+    })
+}
+
+/// Parse record block index (metadata for each record block).
+/// 
+/// Simple list of (compressed_size, decompressed_size) pairs.
+/// No compression or encryption.
+pub fn parse_index(
+    file: &mut File,
+    info: &RecordBlockInfo,
+    header: &MdictHeader,
+) -> Result<Vec<RecordBlock>, Box<dyn Error>> {
+    println!("=== Parsing Record Block Index ===");
+    
+    let mut index_data = vec![0u8; info.record_index_len as usize];
+    file.read_exact(&mut index_data)?;
+    
+    let mut blocks = Vec::new();
+    let mut reader = &index_data[..];
+    
+    while !reader.is_empty() {
+        let compressed_size = utils::read_number(&mut reader, header.number_width)?;
+        let decompressed_size = utils::read_number(&mut reader, header.number_width)?;
+        blocks.push(RecordBlock {
+            compressed_size,
+            decompressed_size,
+        });
+    }
+    
+    // Verify block count
+    if blocks.len() as u64 != info.num_record_blocks {
+        return Err(format!(
+            "Record block count mismatch: expected {}, got {}",
+            info.num_record_blocks, blocks.len()
+        ).into());
+    }
+    
+    println!("Record block index: {} blocks", blocks.len());
+    Ok(blocks)
+}
+
+/// Decompress all record blocks into a single contiguous buffer.
+/// 
+/// Each block is decoded (decrypted + decompressed + verified) and
+/// concatenated together. The resulting buffer contains all dictionary
+/// content in order.
+pub fn decompress_all(
+    file: &mut File,
+    blocks: &[RecordBlock],
+    header: &MdictHeader,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    println!("=== Decompressing Record Blocks ===");
+    
+    // Calculate total decompressed size
+    let total_size: usize = blocks
+        .iter()
+        .map(|b| b.decompressed_size as usize)
+        .sum();
+    
+    let mut all_records = Vec::with_capacity(total_size);
+    
+    for (idx, block_meta) in blocks.iter().enumerate() {
+        // Read compressed block
+        let mut compressed = vec![0u8; block_meta.compressed_size as usize];
+        file.read_exact(&mut compressed)?;
+        
+        // Decode block (decrypt + decompress + verify)
+        let decompressed = decoder::decode_block(
+            &compressed,
+            block_meta.decompressed_size,
+            header.master_key.as_ref(),
+        )?;
+        
+        all_records.extend_from_slice(&decompressed);
+        
+        if (idx + 1) % 100 == 0 {
+            println!("  Processed {}/{} blocks", idx + 1, blocks.len());
+        }
+    }
+    
+    // Verify total size
+    if all_records.len() != total_size {
+        return Err(format!(
+            "Total decompressed size mismatch: expected {}, got {}",
+            total_size, all_records.len()
+        ).into());
+    }
+    
+    println!("Record blocks decompressed: {} bytes total", all_records.len());
+    Ok(all_records)
+}
