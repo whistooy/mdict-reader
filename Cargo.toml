@@ -14,6 +14,9 @@ quick-xml = "0.38.3"
 ripemd = "0.1.3"
 salsa20 = "0.10.2"
 
+[[bin]]
+name = "mdict-reader"
+path = "src/main.rs"
 [lib]
 name = "mdict_reader"
 path = "src/lib.rs"
