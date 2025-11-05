@@ -128,7 +128,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdx-explorer"
+name = "mdict-reader"
 version = "0.1.0"
 dependencies = [
  "adler32",
