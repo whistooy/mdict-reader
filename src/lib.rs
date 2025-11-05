@@ -144,7 +144,7 @@ impl MdictHeader {
 
 
 impl MdictParser {
-    // --- Internal Parsing & Decoding Helpers ---
+    // --- Low-level Decoding Helpers ---
     
     // Reads a number (4 or 8 bytes, big-endian) based on the MDict version.
     fn read_number(reader: &mut impl Read, number_width: usize) -> Result<u64, Box<dyn Error>> {
@@ -371,16 +371,10 @@ impl MdictParser {
 
         Ok(text.into_owned())
     }
+    
+    // --- Internal Parsing Steps ---
 
-    // Creates a new MdictParser and parses the entire file.
-    pub fn new(path: &str) -> Result<Self, Box<dyn Error>> {
-        let mut file = File::open(path)?;
-
-        // MDX Format: For encrypted dictionaries, a passcode (registration code and user ID) is required.
-        // In a real application, this would be provided by the user.
-        let passcode: Option<(&str, &str)> = None; // Some(("0123456789ABCDEF0123456789ABCDEF", "example@example.com"))
-
-        // --- 1. HEADER ---
+    fn parse_header(file: &mut File) -> Result<MdictHeader, Box<dyn Error>> {
         println!("Processing Header Block: START.");
         // MDX Format: 4-byte big-endian integer specifying header length.
         let header_len = file.read_u32::<BigEndian>()?;
@@ -403,7 +397,7 @@ impl MdictParser {
         let header_attrs = loop {
             match xml_reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let attrs = e.attributes()
+                    break e.attributes()
                         .map(|attr_result| {
                             let attr = attr_result?;
                             let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
@@ -411,7 +405,6 @@ impl MdictParser {
                             Ok((key, value))
                         })
                         .collect::<Result<HashMap<String, String>, Box<dyn Error>>>()?;
-                    break attrs;
                 }
                 Ok(Event::Eof) => return Err("End of XML reached without finding a root element.".into()),
                 Err(e) => return Err(e.into()),
@@ -422,26 +415,30 @@ impl MdictParser {
         let mdict_header = MdictHeader::from_attributes(&header_attrs)?;
         println!("Processing Header Block: OK.");
         println!("{:#?}", mdict_header);
+        Ok(mdict_header)
+    }
 
-        // --- 1.5. MASTER KEY DERIVATION ---
+    fn derive_optional_master_key(header: &MdictHeader) -> Result<Option<[u8; 16]>, Box<dyn Error>> {
+        // MDX Format: For encrypted dictionaries, a passcode (registration code and user ID) is required.
+        // In a real application, this would be provided by the user.
+        let passcode: Option<(&str, &str)> = None; // Some(("0123456789ABCDEF0123456789ABCDEF", "example@example.com"))
+        
         // If a passcode is provided and the dictionary is encrypted, derive the master key.
-        let master_key = if let Some((reg_code_hex, user_id_str)) = passcode {
-            if mdict_header.encryption_flags.encrypt_record_blocks {
+        if let Some((reg_code_hex, user_id_str)) = passcode {
+            if header.encryption_flags.encrypt_record_blocks {
                 println!("Deriving master key from passcode...");
                 let reg_code = hex::decode(reg_code_hex)?;
-                Some(Self::derive_master_key(&reg_code, user_id_str.as_bytes())?)
-            } else {
-                None // No need for a key if not encrypted.
+                return Ok(Some(Self::derive_master_key(&reg_code, user_id_str.as_bytes())?));
             }
-        } else {
-            None
-        };
+        }
+        Ok(None)
+    }
 
-        // --- 2. KEY BLOCK INFO ---
+    fn parse_key_block_info(file: &mut File, header: &MdictHeader, master_key: Option<&[u8; 16]>) -> Result<KeyBlockInfo, Box<dyn Error>> {
         println!("Processing Key Block Info: START.");
         // MDX Format: The size of this info block depends on the version.
         // v2.0+ uses 5 u64s (40 bytes); v1.x uses 4 u32s (16 bytes).
-        let num_bytes = if mdict_header.version >= 2.0 { 40 } else { 16 };
+        let num_bytes = if header.version >= 2.0 { 40 } else { 16 };
         let mut key_block_info_bytes = vec![0; num_bytes];
         file.read_exact(&mut key_block_info_bytes)?;
 
@@ -453,24 +450,26 @@ impl MdictParser {
         }
 
         // MDX Format (v2.0+): This info block is followed by its own 4-byte Adler32 checksum.
-        if mdict_header.version >= 2.0 {
+        if header.version >= 2.0 {
             let checksum = file.read_u32::<BigEndian>()?;
             assert_eq!(adler32(&key_block_info_bytes[..])?, checksum, "Key block info checksum mismatch!");
         }
 
         let mut reader = &key_block_info_bytes[..];
         let key_block_info = KeyBlockInfo {
-            num_key_blocks: Self::read_number(&mut reader, mdict_header.number_width)?,
-            num_entries: Self::read_number(&mut reader, mdict_header.number_width)?,
+            num_key_blocks: Self::read_number(&mut reader, header.number_width)?,
+            num_entries: Self::read_number(&mut reader, header.number_width)?,
             // MDX Format (v2.0+): Includes the decompressed length of the key index.
-            key_index_decomp_len: if mdict_header.version >= 2.0 { Some(Self::read_number(&mut reader, mdict_header.number_width)?) } else { None },
-            key_index_comp_len: Self::read_number(&mut reader, mdict_header.number_width)?,
-            key_blocks_len: Self::read_number(&mut reader, mdict_header.number_width)?,
+            key_index_decomp_len: if header.version >= 2.0 { Some(Self::read_number(&mut reader, header.number_width)?) } else { None },
+            key_index_comp_len: Self::read_number(&mut reader, header.number_width)?,
+            key_blocks_len: Self::read_number(&mut reader, header.number_width)?,
         };
         println!("Processing Key Block Info: OK.");
         println!("{:#?}", key_block_info);
+        Ok(key_block_info)
+    }
 
-        // --- 3. KEY INDEX ---
+    fn parse_key_index(file: &mut File, key_block_info: &KeyBlockInfo, header: &MdictHeader) -> Result<Vec<u8>, Box<dyn Error>> {
         println!("Processing Key Index: START.");
         let mut key_index_comp_bytes = vec![0; key_block_info.key_index_comp_len as usize];
         file.read_exact(&mut key_index_comp_bytes)?;
@@ -480,7 +479,7 @@ impl MdictParser {
             // MDX Format (v2): Block header is [4-byte compression type][4-byte checksum].
             let mut decrypted_payload: Vec<u8>; // Must live long enough for the borrow below.
 
-            let payload_to_decompress = if mdict_header.encryption_flags.encrypt_key_index {
+            let payload_to_decompress = if header.encryption_flags.encrypt_key_index {
                 let key = Self::derive_key_for_v2_index(&key_index_comp_bytes);
                 decrypted_payload = key_index_comp_bytes[8..].to_vec();
                 Self::fast_decrypt(&mut decrypted_payload, &key);
@@ -502,34 +501,38 @@ impl MdictParser {
             key_index_comp_bytes
         };
         println!("Processing Key Index: OK.");
+        Ok(key_index_decomp_bytes)
+    }
 
-        // --- 4. PARSE KEY INDEX METADATA ---
+    fn parse_key_index_metadata(decomp_bytes: &[u8], header: &MdictHeader, key_block_info: &KeyBlockInfo) -> Result<Vec<KeyBlock>, Box<dyn Error>> {
         println!("Parsing Key Index Metadata: START.");
         let mut key_blocks: Vec<KeyBlock> = Vec::new();
-        let mut reader = &key_index_decomp_bytes[..];
+        let mut reader = decomp_bytes;
         let mut calculated_num_entries = 0;
 
         while !reader.is_empty() {
             // MDX Format: Each entry in the key index describes one key block.
-            let num_entries_in_block = Self::read_number(&mut reader, mdict_header.number_width)?;
+            let num_entries_in_block = Self::read_number(&mut reader, header.number_width)?;
             calculated_num_entries += num_entries_in_block;
 
             // MDX Format: The first and last keys are stored as length-prefixed strings.
             // We parse them to advance the reader but discard the content.
-            Self::parse_key_text(&mut reader, &mdict_header)?; // First key
-            Self::parse_key_text(&mut reader, &mdict_header)?; // Last key
+            Self::parse_key_text(&mut reader, header)?; // First key
+            Self::parse_key_text(&mut reader, header)?; // Last key
 
             // MDX Format: The entry concludes with the compressed and decompressed sizes of the key block.
-            let compressed_size = Self::read_number(&mut reader, mdict_header.number_width)?;
-            let decompressed_size = Self::read_number(&mut reader, mdict_header.number_width)?;
+            let compressed_size = Self::read_number(&mut reader, header.number_width)?;
+            let decompressed_size = Self::read_number(&mut reader, header.number_width)?;
 
             key_blocks.push(KeyBlock { compressed_size, decompressed_size });
         }
 
         assert_eq!(calculated_num_entries, key_block_info.num_entries, "Mismatch in total entry count!");
         println!("Parsing Key Index Metadata: OK. (Found {} key blocks)", key_blocks.len());
+        Ok(key_blocks)
+    }
 
-        // --- 5. PARSE KEY BLOCKS ---
+    fn parse_key_blocks(file: &mut File, key_block_info: &KeyBlockInfo, key_blocks: &[KeyBlock], header: &MdictHeader, master_key: Option<&[u8; 16]>) -> Result<Vec<Headword>, Box<dyn Error>> {
         println!("Processing Key Blocks: START.");
         let mut all_headwords: Vec<Headword> = Vec::new();
 
@@ -546,57 +549,63 @@ impl MdictParser {
             let decompressed_bytes = Self::decode_block(
                 &compressed_bytes,
                 key_block_meta.decompressed_size,
-                master_key.as_ref(),
+                master_key,
             )?;
 
             let mut block_reader = &decompressed_bytes[..];
             while !block_reader.is_empty() {
                 // MDX Format: Each headword entry is [record_id][null_terminated_text].
-                let id = Self::read_number(&mut block_reader, mdict_header.number_width)?;
-                let text = Self::read_null_terminated_string(&mut block_reader, mdict_header.encoding)?;
+                let id = Self::read_number(&mut block_reader, header.number_width)?;
+                let text = Self::read_null_terminated_string(&mut block_reader, header.encoding)?;
                 all_headwords.push(Headword { id, text });
             }
         }
 
         assert_eq!(key_block_info.num_entries, all_headwords.len() as u64, "Final headword count does not match expected total!");
         println!("Processing Key Blocks: OK. (Total headwords: {})", all_headwords.len());
+        Ok(all_headwords)
+    }
 
-        // --- 6. READ RECORD BLOCK INFO ---
+    fn parse_record_block_info(file: &mut File, header: &MdictHeader, key_block_info: &KeyBlockInfo) -> Result<RecordBlockInfo, Box<dyn Error>> {
         println!("Processing Record Block Info: START.");
         // MDX Format: This info block is read directly from the file stream. Its structure
         // mirrors the key block info and is not checksummed.
         let record_block_info = RecordBlockInfo {
-            num_record_blocks: Self::read_number(&mut file, mdict_header.number_width)?,
-            num_entries: Self::read_number(&mut file, mdict_header.number_width)?,
-            record_index_len: Self::read_number(&mut file, mdict_header.number_width)?,
-            record_blocks_len: Self::read_number(&mut file, mdict_header.number_width)?,
+            num_record_blocks: Self::read_number(file, header.number_width)?,
+            num_entries: Self::read_number(file, header.number_width)?,
+            record_index_len: Self::read_number(file, header.number_width)?,
+            record_blocks_len: Self::read_number(file, header.number_width)?,
         };
 
         // Sanity check: the number of entries should be consistent across the file.
         assert_eq!(record_block_info.num_entries, key_block_info.num_entries, "Record and key entry counts do not match!");
         println!("Processing Record Block Info: OK.");
         println!("{:#?}", record_block_info);
+        Ok(record_block_info)
+    }
 
-        // --- 7. PARSE RECORD BLOCK INDEX ---
+    fn parse_record_block_index(file: &mut File, record_info: &RecordBlockInfo, header: &MdictHeader) -> Result<Vec<RecordBlock>, Box<dyn Error>> {
         println!("Parsing Record Block Index: START.");
         // MDX Format: This is a simple list of metadata for each record block.
         // Unlike the key index, it's not compressed and contains no headword text.
-        let mut record_block_index_bytes = vec![0; record_block_info.record_index_len as usize];
+        let mut record_block_index_bytes = vec![0; record_info.record_index_len as usize];
         file.read_exact(&mut record_block_index_bytes)?;
 
         let mut reader = &record_block_index_bytes[..];
         let mut record_blocks: Vec<RecordBlock> = Vec::new();
         while !reader.is_empty() {
             // MDX Format: Each entry defines the size of one record block.
-            let compressed_size = Self::read_number(&mut reader, mdict_header.number_width)?;
-            let decompressed_size = Self::read_number(&mut reader, mdict_header.number_width)?;
+            let compressed_size = Self::read_number(&mut reader, header.number_width)?;
+            let decompressed_size = Self::read_number(&mut reader, header.number_width)?;
             record_blocks.push(RecordBlock { compressed_size, decompressed_size });
         }
 
-        assert_eq!(record_blocks.len() as u64, record_block_info.num_record_blocks, "Mismatch in record block count!");
+        assert_eq!(record_blocks.len() as u64, record_info.num_record_blocks, "Mismatch in record block count!");
         println!("Parsing Record Block Index: OK. (Found {} record blocks)", record_blocks.len());
-        
-        // --- 8. DECOMPRESS ALL RECORD BLOCKS ---
+        Ok(record_blocks)
+    }
+
+    fn decompress_record_blocks(file: &mut File, record_blocks: &[RecordBlock], master_key: Option<&[u8; 16]>) -> Result<Vec<u8>, Box<dyn Error>> {
         println!("Processing Record Blocks: START.");
         let total_decomp_size: usize = record_blocks.iter().map(|b| b.decompressed_size as usize).sum();
         let mut all_records_decompressed = Vec::with_capacity(total_decomp_size);
@@ -609,7 +618,7 @@ impl MdictParser {
             let decompressed_bytes = Self::decode_block(
                 &compressed_bytes,
                 record_block_meta.decompressed_size,
-                master_key.as_ref(),
+                master_key,
             )?;
 
             all_records_decompressed.extend_from_slice(&decompressed_bytes);
@@ -617,7 +626,30 @@ impl MdictParser {
 
         assert_eq!(all_records_decompressed.len(), total_decomp_size, "Final decompressed size does not match expected size!");
         println!("Processing Record Blocks: OK. (Total decompressed size: {} bytes)", all_records_decompressed.len());
-        
+        Ok(all_records_decompressed)
+    }
+
+    // Creates a new MdictParser and parses the entire file.
+    pub fn new(path: &str) -> Result<Self, Box<dyn Error>> {
+        let mut file = File::open(path)?;
+        // --- 1. HEADER ---
+        let mdict_header = Self::parse_header(&mut file)?;
+        // --- 1.5. MASTER KEY DERIVATION ---
+        let master_key = Self::derive_optional_master_key(&mdict_header)?;
+        // --- 2. KEY BLOCK INFO ---
+        let key_block_info = Self::parse_key_block_info(&mut file, &mdict_header, master_key.as_ref())?;
+        // --- 3. KEY INDEX ---
+        let key_index_decomp_bytes = Self::parse_key_index(&mut file, &key_block_info, &mdict_header)?;
+        // --- 4. PARSE KEY INDEX METADATA ---
+        let key_blocks = Self::parse_key_index_metadata(&key_index_decomp_bytes, &mdict_header, &key_block_info)?;
+        // --- 5. PARSE KEY BLOCKS ---
+        let all_headwords = Self::parse_key_blocks(&mut file, &key_block_info, &key_blocks, &mdict_header, master_key.as_ref())?;
+        // --- 6. READ RECORD BLOCK INFO ---
+        let record_block_info = Self::parse_record_block_info(&mut file, &mdict_header, &key_block_info)?;
+        // --- 7. PARSE RECORD BLOCK INDEX ---
+        let record_blocks = Self::parse_record_block_index(&mut file, &record_block_info, &mdict_header)?;
+        // --- 8. DECOMPRESS ALL RECORD BLOCKS ---
+        let all_records_decompressed = Self::decompress_record_blocks(&mut file, &record_blocks, master_key.as_ref())?;
         // --- Return the fully parsed struct ---
         Ok(Self {
             header: mdict_header,
