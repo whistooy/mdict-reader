@@ -1,10 +1,10 @@
 //! Record block parsing (actual dictionary content)
 
-use std::error::Error;
 use std::fs::File;
 use std::io::Read;
 use super::models::{MdictHeader, KeyBlockInfo, RecordBlockInfo, RecordBlock};
 use super::{utils, decoder};
+use super::error::{Result, MdictError};
 
 /// Parse record block info section.
 /// 
@@ -19,7 +19,7 @@ pub fn parse_info(
     file: &mut File,
     header: &MdictHeader,
     key_info: &KeyBlockInfo,
-) -> Result<RecordBlockInfo, Box<dyn Error>> {
+) -> Result<RecordBlockInfo> {
     println!("=== Parsing Record Block Info ===");
     
     let num_record_blocks = utils::read_number(file, header.number_width)?;
@@ -29,10 +29,11 @@ pub fn parse_info(
     
     // Sanity check: entry count should match key blocks
     if num_entries != key_info.num_entries {
-        return Err(format!(
-            "Record entry count ({}) doesn't match key entry count ({})",
-            num_entries, key_info.num_entries
-        ).into());
+        return Err(MdictError::CountMismatch {
+            item_type: "record entries vs key entries",
+            expected: key_info.num_entries,
+            found: num_entries,
+        });
     }
     
     println!("Record block info: {} blocks, {} entries", num_record_blocks, num_entries);
@@ -53,7 +54,7 @@ pub fn parse_index(
     file: &mut File,
     info: &RecordBlockInfo,
     header: &MdictHeader,
-) -> Result<Vec<RecordBlock>, Box<dyn Error>> {
+) -> Result<Vec<RecordBlock>> {
     println!("=== Parsing Record Block Index ===");
     
     let mut index_data = vec![0u8; info.record_index_len as usize];
@@ -73,10 +74,11 @@ pub fn parse_index(
     
     // Verify block count
     if blocks.len() as u64 != info.num_record_blocks {
-        return Err(format!(
-            "Record block count mismatch: expected {}, got {}",
-            info.num_record_blocks, blocks.len()
-        ).into());
+        return Err(MdictError::CountMismatch {
+            item_type: "record blocks in index",
+            expected: info.num_record_blocks,
+            found: blocks.len() as u64,
+        });
     }
     
     println!("Record block index: {} blocks", blocks.len());
@@ -92,7 +94,7 @@ pub fn decompress_all(
     file: &mut File,
     blocks: &[RecordBlock],
     header: &MdictHeader,
-) -> Result<Vec<u8>, Box<dyn Error>> {
+) -> Result<Vec<u8>> {
     println!("=== Decompressing Record Blocks ===");
     
     // Calculate total decompressed size
@@ -124,10 +126,11 @@ pub fn decompress_all(
     
     // Verify total size
     if all_records.len() != total_size {
-        return Err(format!(
-            "Total decompressed size mismatch: expected {}, got {}",
-            total_size, all_records.len()
-        ).into());
+        return Err(MdictError::SizeMismatch {
+            context: "total decompressed record buffer",
+            expected: total_size as u64,
+            found: all_records.len() as u64,
+        });
     }
     
     println!("Record blocks decompressed: {} bytes total", all_records.len());

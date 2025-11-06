@@ -16,4 +16,5 @@ pub use mdict::{
         KeyBlockInfo, 
         RecordBlockInfo
     },
+    error::{MdictError, Result},
 };

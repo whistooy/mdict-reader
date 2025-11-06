@@ -1,8 +1,8 @@
 //! Cryptographic operations for MDict format
 
-use std::error::Error;
 use ripemd::{Digest, Ripemd128};
 use salsa20::{cipher::{KeyIvInit, StreamCipher}, Salsa8};
+use super::error::{Result, MdictError};
 
 /// Derive master encryption key from registration code and user ID.
 /// 
@@ -10,7 +10,7 @@ use salsa20::{cipher::{KeyIvInit, StreamCipher}, Salsa8};
 /// 1. Hash user ID with RIPEMD-128 → 16-byte digest
 /// 2. Duplicate digest to form 32-byte Salsa20 key
 /// 3. Decrypt registration code with Salsa20/8
-pub fn derive_master_key(reg_code: &[u8], user_id: &[u8]) -> Result<[u8; 16], Box<dyn Error>> {
+pub fn derive_master_key(reg_code: &[u8], user_id: &[u8]) -> Result<[u8; 16]> {
     // Hash user ID to create cipher key
     let mut hasher = Ripemd128::new();
     hasher.update(user_id);
@@ -27,7 +27,7 @@ pub fn derive_master_key(reg_code: &[u8], user_id: &[u8]) -> Result<[u8; 16], Bo
     cipher.apply_keystream(&mut key);
 
     key.try_into()
-        .map_err(|_| "Registration code must be exactly 16 bytes".into())
+        .map_err(|_| MdictError::DecryptionError("Registration code must be exactly 16 bytes".to_string()))
 }
 
 /// Decrypt data using Salsa20/8 stream cipher.
@@ -78,7 +78,7 @@ pub fn decrypt_payload(
     payload: &[u8],
     encryption_type: u8,
     key: &[u8; 16],
-) -> Result<Vec<u8>, Box<dyn Error>> {
+) -> Result<Vec<u8>> {
     match encryption_type {
         0 => Ok(payload.to_vec()), // No encryption
         1 => {
@@ -91,6 +91,6 @@ pub fn decrypt_payload(
             salsa_decrypt(&mut decrypted, key);
             Ok(decrypted)
         }
-        _ => Err(format!("Unknown encryption type: {}", encryption_type).into()),
+        _ => Err(MdictError::DecryptionError(format!("Unknown encryption type: {}", encryption_type))),
     }
 }

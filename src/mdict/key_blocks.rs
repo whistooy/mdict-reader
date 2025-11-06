@@ -1,6 +1,5 @@
 //! Key block parsing (index and blocks containing key entries)
 
-use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Cursor};
 use byteorder::{BigEndian, LittleEndian, ByteOrder, ReadBytesExt};
@@ -8,6 +7,7 @@ use encoding_rs::{UTF_16LE, UTF_16BE};
 use adler32::adler32;
 use super::models::{MdictHeader, KeyBlockInfo, KeyBlock, KeyEntry};
 use super::{utils, crypto, decoder};
+use super::error::{Result, MdictError};
 
 /// Parse key block info section.
 /// 
@@ -27,7 +27,7 @@ use super::{utils, crypto, decoder};
 /// (no checksum)
 /// 
 /// If encrypted, entire block is Salsa20-encrypted.
-pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo, Box<dyn Error>> {
+pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo> {
     println!("=== Parsing Key Block Info ===");
     
     let info_size = if header.version >= 2.0 { 40 } else { 16 };
@@ -44,7 +44,10 @@ pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo,
         let checksum_expected = file.read_u32::<BigEndian>()?;
         let checksum_actual = adler32(&info_bytes[..])?;
         if checksum_actual != checksum_expected {
-            return Err("Key block info checksum mismatch".into());
+            return Err(MdictError::ChecksumMismatch {
+                expected: checksum_expected,
+                actual: checksum_actual,
+            });
         }
     }
     
@@ -84,7 +87,7 @@ pub fn parse_index(
     file: &mut File,
     info: &KeyBlockInfo,
     header: &MdictHeader,
-) -> Result<Vec<u8>, Box<dyn Error>> {
+) -> Result<Vec<u8>> {
     println!("=== Parsing Key Index ===");
     
     let mut compressed = vec![0u8; info.key_index_comp_len as usize];
@@ -114,7 +117,10 @@ pub fn parse_index(
         let checksum_expected = BigEndian::read_u32(&compressed[4..8]);
         let checksum_actual = adler32(&decompressed[..])?;
         if checksum_actual != checksum_expected {
-            return Err("Key index checksum mismatch".into());
+            return Err(MdictError::ChecksumMismatch {
+                expected: checksum_expected,
+                actual: checksum_actual,
+            });
         }
         
         decompressed
@@ -139,7 +145,7 @@ pub fn parse_index_metadata(
     index_data: &[u8],
     header: &MdictHeader,
     info: &KeyBlockInfo,
-) -> Result<Vec<KeyBlock>, Box<dyn Error>> {
+) -> Result<Vec<KeyBlock>> {
     println!("=== Parsing Key Index Metadata ===");
     
     let mut blocks = Vec::new();
@@ -167,10 +173,11 @@ pub fn parse_index_metadata(
     
     // Verify total entry count matches
     if total_entries != info.num_entries {
-        return Err(format!(
-            "Entry count mismatch: expected {}, got {}",
-            info.num_entries, total_entries
-        ).into());
+        return Err(MdictError::CountMismatch {
+            item_type: "key entries in index",
+            expected: info.num_entries,
+            found: total_entries,
+        });
     }
     
     println!("Key index metadata: {} key blocks", blocks.len());
@@ -186,7 +193,7 @@ pub fn parse_blocks(
     info: &KeyBlockInfo,
     blocks: &[KeyBlock],
     header: &MdictHeader,
-) -> Result<Vec<KeyEntry>, Box<dyn Error>> {
+) -> Result<Vec<KeyEntry>> {
     println!("=== Parsing Key Blocks ===");
     
     // Read all key block data at once
@@ -220,12 +227,12 @@ pub fn parse_blocks(
         }
     }
     
-    // Verify total key entry count
     if key_entries.len() as u64 != info.num_entries {
-        return Err(format!(
-            "Key entry count mismatch: expected {}, got {}",
-            info.num_entries, key_entries.len()
-        ).into());
+        return Err(MdictError::CountMismatch {
+            item_type: "parsed key entries",
+            expected: info.num_entries,
+            found: key_entries.len() as u64,
+        });
     }
     
     println!("Key blocks parsed: {} entries", key_entries.len());
@@ -239,7 +246,7 @@ pub fn parse_blocks(
 /// MDict format stores text as:
 /// - v1.x: 1-byte length + text (no terminator)
 /// - v2.x: 2-byte length + text + terminator (1 or 2 bytes)
-fn skip_key_text(reader: &mut &[u8], header: &MdictHeader) -> Result<(), Box<dyn Error>> {
+fn skip_key_text(reader: &mut &[u8], header: &MdictHeader) -> Result<()> {
     // Read text length in "units" (1 unit = 1 byte for UTF-8, 2 bytes for UTF-16)
     let text_len_units = if header.version >= 2.0 {
         utils::read_small_number(reader, 2)?
@@ -261,7 +268,7 @@ fn skip_key_text(reader: &mut &[u8], header: &MdictHeader) -> Result<(), Box<dyn
     let total_bytes = ((text_len_units + terminator_units) as usize) * unit_width;
     
     if reader.len() < total_bytes {
-        return Err("Incomplete key text in index".into());
+        return Err(MdictError::InvalidFormat("Incomplete key text in index".to_string()));
     }
     
     *reader = &reader[total_bytes..];
@@ -275,7 +282,7 @@ fn skip_key_text(reader: &mut &[u8], header: &MdictHeader) -> Result<(), Box<dyn
 fn read_null_terminated_string(
     reader: &mut &[u8],
     encoding: &'static encoding_rs::Encoding,
-) -> Result<String, Box<dyn Error>> {
+) -> Result<String> {
     let is_utf16 = encoding == UTF_16LE || encoding == UTF_16BE;
     let terminator_width = if is_utf16 { 2 } else { 1 };
     
@@ -284,12 +291,12 @@ fn read_null_terminated_string(
         reader
             .windows(2)
             .position(|w| w == [0, 0])
-            .ok_or("Missing null terminator in UTF-16 string")?
+            .ok_or_else(|| MdictError::InvalidFormat("Missing null terminator in UTF-16 string".to_string()))?
     } else {
         reader
             .iter()
             .position(|&b| b == 0)
-            .ok_or("Missing null terminator in string")?
+            .ok_or_else(|| MdictError::InvalidFormat("Missing null terminator in string".to_string()))?
     };
     
     // Decode text

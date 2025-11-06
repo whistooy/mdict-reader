@@ -1,10 +1,10 @@
 //! Block decoding orchestration (decryption + decompression + verification)
 
-use std::error::Error;
 use byteorder::{BigEndian, LittleEndian, ByteOrder};
 use adler32::adler32;
 use ripemd::{Digest, Ripemd128};
 use super::{crypto, compression};
+use super::error::{Result, MdictError};
 
 /// Decode a compressed/encrypted block.
 /// 
@@ -22,9 +22,9 @@ pub fn decode_block(
     raw_block: &[u8],
     expected_decompressed_size: u64,
     master_key: Option<&[u8; 16]>,
-) -> Result<Vec<u8>, Box<dyn Error>> {
+) -> Result<Vec<u8>> {
     if raw_block.len() < 8 {
-        return Err("Block too short (minimum 8 bytes required)".into());
+        return Err(MdictError::InvalidFormat("Block too short (minimum 8 bytes required)".to_string()));
     }
 
     // Parse block header
@@ -58,10 +58,10 @@ pub fn decode_block(
     // Step 3: Verify checksum
     let checksum_actual = adler32(&decompressed[..])?;
     if checksum_actual != checksum_expected {
-        return Err(format!(
-            "Block checksum mismatch: expected 0x{:08X}, got 0x{:08X}",
-            checksum_expected, checksum_actual
-        ).into());
+        return Err(MdictError::ChecksumMismatch {
+            expected: checksum_expected,
+            actual: checksum_actual,
+        });
     }
 
     Ok(decompressed)

@@ -1,6 +1,7 @@
 //! Core MDict reader module
 
 pub mod models;
+pub mod error;
 mod header;
 mod key_blocks;
 mod record_blocks;
@@ -9,9 +10,9 @@ mod compression;
 mod decoder;
 mod utils;
 
-use std::error::Error;
 use std::fs::File;
 use models::*;
+pub use error::{MdictError, Result};
 
 /// The main reader for MDict dictionary files.
 /// 
@@ -40,7 +41,7 @@ impl MdictReader {
     /// - File format is invalid or corrupted
     /// - Unsupported version (3.0+)
     /// - Checksum verification fails
-    pub fn new(path: &str) -> Result<Self, Box<dyn Error>> {
+    pub fn new(path: &str) -> Result<Self> {
         let mut file = File::open(path)?;
 
         // Parse header (includes master key derivation if encrypted)
