@@ -67,7 +67,7 @@ pub fn decode_block(
     )?;
 
     // Step 3: Verify checksum
-    let checksum_actual = adler32(&decompressed[..])?;
+    let checksum_actual = adler32(decompressed.as_slice())?;
     if checksum_actual != checksum_expected {
         return Err(MdictError::ChecksumMismatch {
             expected: checksum_expected,

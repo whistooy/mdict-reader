@@ -65,7 +65,7 @@ pub fn parse_index(
     file.read_exact(&mut index_data)?;
 
     let mut blocks = Vec::new();
-    let mut reader = &index_data[..];
+    let mut reader = index_data.as_slice();
 
     while !reader.is_empty() {
         let compressed_size = utils::read_number(&mut reader, header.version.number_width())?;

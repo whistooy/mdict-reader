@@ -34,7 +34,7 @@ pub fn parse(file: &mut File, passcode: Option<(&str, &str)>) -> Result<MdictHea
 
     // Verify checksum
     let checksum_expected = file.read_u32::<LittleEndian>()?;
-    let checksum_actual = adler32(&header_bytes[..])?;
+    let checksum_actual = adler32(header_bytes.as_slice())?;
     trace!("Header checksum: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
     if checksum_actual != checksum_expected {
         return Err(MdictError::ChecksumMismatch {

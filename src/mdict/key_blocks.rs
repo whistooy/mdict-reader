@@ -51,7 +51,7 @@ pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo>
     // Verify checksum (v2.0+ only)
     if header.version == MdictVersion::V2 {
         let checksum_expected = file.read_u32::<BigEndian>()?;
-        let checksum_actual = adler32(&info_bytes[..])?;
+        let checksum_actual = adler32(info_bytes.as_slice())?;
         trace!("Key block info checksum: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
         if checksum_actual != checksum_expected {
             return Err(MdictError::ChecksumMismatch {
@@ -62,7 +62,7 @@ pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo>
     }
 
     // Parse fields
-    let mut reader = &info_bytes[..];
+    let mut reader = info_bytes.as_slice();
     let num_key_blocks = utils::read_number(&mut reader, header.version.number_width())?;
     let num_entries = utils::read_number(&mut reader, header.version.number_width())?;
     let key_index_decomp_len = match header.version {
@@ -134,7 +134,7 @@ pub fn parse_index(
 
         // Verify checksum
         let checksum_expected = BigEndian::read_u32(&compressed[4..8]);
-        let checksum_actual = adler32(&decompressed[..])?;
+        let checksum_actual = adler32(decompressed.as_slice())?;
         trace!("Key index checksum: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
         if checksum_actual != checksum_expected {
             return Err(MdictError::ChecksumMismatch {
@@ -221,7 +221,7 @@ pub fn parse_blocks(
     let mut all_blocks_data = vec![0u8; info.key_blocks_len as usize];
     file.read_exact(&mut all_blocks_data)?;
     debug!("Read {} bytes of key block data", info.key_blocks_len);
-    let mut remaining_data = &all_blocks_data[..];
+    let mut remaining_data = all_blocks_data.as_slice();
 
     let mut key_entries = Vec::with_capacity(info.num_entries as usize);
 
@@ -240,7 +240,7 @@ pub fn parse_blocks(
         remaining_data = &remaining_data[block_size..];
 
         // Parse entries from decompressed data
-        let mut block_reader = &decompressed[..];
+        let mut block_reader = decompressed.as_slice();
         while !block_reader.is_empty() {
             let record_id = utils::read_number(&mut block_reader, header.version.number_width())?;
             let text = read_null_terminated_string(&mut block_reader, header.encoding)?;
