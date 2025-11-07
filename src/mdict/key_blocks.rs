@@ -221,23 +221,24 @@ pub fn parse_blocks(
     let mut all_blocks_data = vec![0u8; info.key_blocks_len as usize];
     file.read_exact(&mut all_blocks_data)?;
     debug!("Read {} bytes of key block data", info.key_blocks_len);
-    let mut remaining_data = all_blocks_data.as_slice();
+    let mut remaining_data = all_blocks_data.as_mut_slice();
 
     let mut key_entries = Vec::with_capacity(info.num_entries as usize);
 
     for (idx, block_meta) in blocks.iter().enumerate() {
         let block_size = block_meta.compressed_size as usize;
         // Get the slice for the current block from the front of `remaining_data`.
-        let compressed_slice = &remaining_data[..block_size];
+        let compressed_slice = &mut remaining_data[..block_size];
         
-        // Decode block (decrypt + decompress + verify)
+        // Decrypt, decompress, and verify the block.
+        // NOTE: Mutates the source buffer in-place during decryption.
         let decompressed = decoder::decode_block(
             compressed_slice,
             block_meta.decompressed_size,
             header.master_key.as_ref(),
         )?;
 
-        remaining_data = &remaining_data[block_size..];
+        remaining_data = &mut remaining_data[block_size..];
 
         // Parse entries from decompressed data
         let mut block_reader = decompressed.as_slice();

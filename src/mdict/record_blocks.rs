@@ -115,9 +115,10 @@ pub fn decompress_all(
         let mut compressed = vec![0u8; block_meta.compressed_size as usize];
         file.read_exact(&mut compressed)?;
 
-        // Decode block (decrypt + decompress + verify)
+        // Decrypt, decompress, and verify the block.
+        // NOTE: Mutates the source buffer in-place during decryption.
         let decompressed = decoder::decode_block(
-            &compressed,
+            &mut compressed,
             block_meta.decompressed_size,
             header.master_key.as_ref(),
         )?;

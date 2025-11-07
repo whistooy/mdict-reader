@@ -10,6 +10,13 @@ use super::error::{Result, MdictError};
 
 /// Decode a compressed/encrypted block.
 /// 
+/// # Arguments
+/// * `raw_block` - The raw block data from the file. **This buffer will be mutated**
+///   during decryption, acting as scratch space for the decrypted payload. Its
+///   contents should be considered invalid after this function returns.
+/// * `expected_decompressed_size` - The expected final size after decompression.
+/// * `master_key` - The master decryption key, if any.
+/// 
 /// MDict block format:
 /// - Bytes 0-3: Compression type (lower 4 bits) + Encryption type (next 4 bits)
 /// - Bytes 4-7: Adler32 checksum of decompressed data
@@ -21,7 +28,7 @@ use super::error::{Result, MdictError};
 /// 3. Decompress payload
 /// 4. Verify checksum
 pub fn decode_block(
-    raw_block: &[u8],
+    raw_block: &mut [u8],
     expected_decompressed_size: u64,
     master_key: Option<&[u8; 16]>,
 ) -> Result<Vec<u8>> {
@@ -34,7 +41,6 @@ pub fn decode_block(
     let compression_type = CompressionType::try_from((info & 0xF) as u8)?;
     let encryption_type = EncryptionType::try_from(((info >> 4) & 0xF) as u8)?;
     let checksum_expected = BigEndian::read_u32(&raw_block[4..8]);
-    let payload = &raw_block[8..];
 
     trace!(
         "Decoding block: compression={:?}, encryption={:?}, expected_size={} bytes",
@@ -56,12 +62,13 @@ pub fn decode_block(
         }
     };
 
+    let payload = &mut raw_block[8..];
     // Step 1: Decrypt
-    let decrypted = crypto::decrypt_payload(payload, encryption_type, &decryption_key)?;
+    crypto::decrypt_payload_in_place(payload, encryption_type, &decryption_key);
 
     // Step 2: Decompress
     let decompressed = compression::decompress_payload(
-        &decrypted,
+        payload,
         compression_type,
         expected_decompressed_size,
     )?;

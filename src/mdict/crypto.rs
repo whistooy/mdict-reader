@@ -84,27 +84,22 @@ pub fn derive_key_for_v2_index(key_index_block: &[u8]) -> [u8; 16] {
 /// - 0: No encryption
 /// - 1: Fast decrypt (XOR-based)
 /// - 2: Salsa20/8
-pub fn decrypt_payload(
-    payload: &[u8],
+pub fn decrypt_payload_in_place(
+    payload: &mut [u8],
     encryption_type: EncryptionType,
     key: &[u8; 16],
-) -> Result<Vec<u8>> {
+) {
     match encryption_type {
         EncryptionType::None => {
-            trace!("No encryption, copying {} bytes", payload.len());
-            Ok(payload.to_vec())
+            trace!("No encryption, skipping {} bytes", payload.len());
         }
         EncryptionType::Fast => {
-            trace!("Decrypting {} bytes with fast XOR method", payload.len());
-            let mut decrypted = payload.to_vec();
-            fast_decrypt(&mut decrypted, key);
-            Ok(decrypted)
+            trace!("Decrypting {} bytes in-place with fast XOR method", payload.len());
+            fast_decrypt(payload, key);
         }
         EncryptionType::Salsa20 => {
-            trace!("Decrypting {} bytes with Salsa20", payload.len());
-            let mut decrypted = payload.to_vec();
-            salsa_decrypt(&mut decrypted, key);
-            Ok(decrypted)
+            trace!("Decrypting {} bytes in-place with Salsa20", payload.len());
+            salsa_decrypt(payload, key);
         }
     }
 }
