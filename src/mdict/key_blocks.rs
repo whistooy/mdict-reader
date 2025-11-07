@@ -24,7 +24,7 @@ use super::error::{Result, MdictError};
 /// - 4 bytes: Number of entries
 /// - 4 bytes: Key index compressed length
 /// - 4 bytes: Key blocks total length
-/// (no checksum)
+/// - (no checksum)
 /// 
 /// If encrypted, entire block is Salsa20-encrypted.
 pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo> {
