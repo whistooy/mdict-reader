@@ -1,7 +1,7 @@
 //! Key block parsing (index and blocks containing key entries)
 
 use std::fs::File;
-use std::io::{Read, Cursor};
+use std::io::Read;
 use byteorder::{BigEndian, LittleEndian, ByteOrder, ReadBytesExt};
 use adler32::adler32;
 use log::{debug, info, trace};
@@ -221,21 +221,23 @@ pub fn parse_blocks(
     let mut all_blocks_data = vec![0u8; info.key_blocks_len as usize];
     file.read_exact(&mut all_blocks_data)?;
     debug!("Read {} bytes of key block data", info.key_blocks_len);
-    let mut cursor = Cursor::new(all_blocks_data);
+    let mut remaining_data = &all_blocks_data[..];
 
-    let mut key_entries = Vec::new();
+    let mut key_entries = Vec::with_capacity(info.num_entries as usize);
 
     for (idx, block_meta) in blocks.iter().enumerate() {
-        // Read one compressed block
-        let mut compressed = vec![0u8; block_meta.compressed_size as usize];
-        cursor.read_exact(&mut compressed)?;
-
+        let block_size = block_meta.compressed_size as usize;
+        // Get the slice for the current block from the front of `remaining_data`.
+        let compressed_slice = &remaining_data[..block_size];
+        
         // Decode block (decrypt + decompress + verify)
         let decompressed = decoder::decode_block(
-            &compressed,
+            compressed_slice,
             block_meta.decompressed_size,
             header.master_key.as_ref(),
         )?;
+
+        remaining_data = &remaining_data[block_size..];
 
         // Parse entries from decompressed data
         let mut block_reader = &decompressed[..];
@@ -305,20 +307,25 @@ fn read_null_terminated_string(
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<String> {
     let width = utils::unit_width(encoding);
-    let terminator = vec![0u8; width];
-
+    
     // Find null terminator
-    let end_pos = reader
-        .windows(width)
-        .position(|w| w == terminator.as_slice())
-        .ok_or_else(|| MdictError::InvalidFormat("Missing null terminator in string".to_string()))?;
-
+    let end_pos = if width == 2 {
+        reader
+            .windows(2)
+            .position(|w| w == [0, 0])
+    } else {
+        reader
+            .iter()
+            .position(|&b| b == 0)
+    }
+    .ok_or_else(|| MdictError::InvalidFormat("Missing null terminator in string".to_string()))?;
+    
     // Decode text
     let text_bytes = &reader[..end_pos];
     let (decoded, _, _) = encoding.decode(text_bytes);
-
+    
     // Advance reader past text and terminator
     *reader = &reader[end_pos + width..];
-
+    
     Ok(decoded.into_owned())
 }
