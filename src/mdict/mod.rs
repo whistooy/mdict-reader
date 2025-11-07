@@ -34,6 +34,7 @@ impl MdictReader {
     /// 
     /// # Arguments
     /// * `path` - File path to the .mdx or .mdd file
+    /// * `passcode` - Optional (regcode_hex, user_email) tuple for encrypted files
     /// 
     /// # Errors
     /// Returns an error if:
@@ -41,11 +42,11 @@ impl MdictReader {
     /// - File format is invalid or corrupted
     /// - Unsupported version (3.0+)
     /// - Checksum verification fails
-    pub fn new(path: &str) -> Result<Self> {
+    pub fn new(path: &str, passcode: Option<(&str, &str)>) -> Result<Self> {
         let mut file = File::open(path)?;
 
         // Parse header (includes master key derivation if encrypted)
-        let mdict_header = header::parse(&mut file)?;
+        let mdict_header = header::parse(&mut file, passcode)?;
         
         // Parse key block metadata
         let key_block_info = key_blocks::parse_info(

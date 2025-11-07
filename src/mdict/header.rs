@@ -20,7 +20,7 @@ use super::error::{Result, MdictError};
 /// - 4 bytes: Adler32 checksum (little-endian)
 /// 
 /// If the file is encrypted and a passcode is configured, derives the master key.
-pub fn parse(file: &mut File) -> Result<MdictHeader> {
+pub fn parse(file: &mut File, passcode: Option<(&str, &str)>) -> Result<MdictHeader> {
     println!("=== Parsing Header ===");
 
     // Read header length
@@ -55,8 +55,8 @@ pub fn parse(file: &mut File) -> Result<MdictHeader> {
     // Build header struct
     let mut header = build_header_from_attributes(&attrs)?;
     
-    // Derive master key if needed
-    header.master_key = derive_master_key_if_needed(&header)?;
+    // Derive master key
+    header.master_key = try_derive_master_key(passcode)?;
     
     println!("Header parsed: version={}, title={}, encrypted={:?}", 
         header.engine_version, header.title, header.encryption_flags);
@@ -145,23 +145,28 @@ fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<Mdict
     })
 }
 
-/// Derive master key if file is encrypted and passcode is provided.
+/// Derive master key if passcode is provided.
 /// 
 /// In production, passcode should come from user input or config.
 /// Format: (registration_code_hex, email)
-fn derive_master_key_if_needed(header: &MdictHeader) -> Result<Option<[u8; 16]>> {
-    // TODO: In production, load from config or prompt user
-    let passcode: Option<(&str, &str)> = None;
-    // Example: Some(("0123456789ABCDEF0123456789ABCDEF", "user@example.com"))
-    
+fn try_derive_master_key(
+    passcode: Option<(&str, &str)>,
+) -> Result<Option<[u8; 16]>> {
     if let Some((reg_code_hex, user_email)) = passcode {
-        if header.encryption_flags.encrypt_record_blocks {
-            println!("Deriving master key from passcode...");
-            let reg_code = hex::decode(reg_code_hex).map_err(|e| MdictError::DecryptionError(e.to_string()))?;
-            let master_key = crypto::derive_master_key(&reg_code, user_email.as_bytes())?;
-            return Ok(Some(master_key));
+        println!("Deriving master key from passcode...");
+        let reg_code = hex::decode(reg_code_hex)
+            .map_err(|e| MdictError::DecryptionError(format!("Invalid regcode hex: {}", e)))?;
+      
+        if reg_code.len() != 16 {
+            return Err(MdictError::DecryptionError(
+                "Registration code must be exactly 16 bytes (32 hex chars)".to_string()
+            ));
         }
+      
+        let master_key = crypto::derive_master_key(&reg_code, user_email.as_bytes())?;
+        return Ok(Some(master_key));
     }
-    
+  
+    // No passcode provided, no key to derive.
     Ok(None)
 }

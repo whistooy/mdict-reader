@@ -36,9 +36,14 @@ pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo>
     let mut info_bytes = vec![0u8; info_size];
     file.read_exact(&mut info_bytes)?;
     
-    // Decrypt if master key present
-    if let Some(ref key) = header.master_key {
-        crypto::salsa_decrypt(&mut info_bytes, key);
+    // Check if decryption is needed
+    if header.encryption_flags.encrypt_record_blocks {
+        if let Some(ref key) = header.master_key {
+            crypto::salsa_decrypt(&mut info_bytes, key);
+        } else {
+            // No key available, but one is required. Fail now.
+            return Err(MdictError::PasscodeRequired);
+        }
     }
     
     // Verify checksum (v2.0+ only)
