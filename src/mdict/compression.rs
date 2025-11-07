@@ -3,6 +3,7 @@
 use std::io::Read;
 use flate2::read::ZlibDecoder;
 use lzokay::decompress::decompress as lzokay_decompress;
+use log::trace;
 use super::models::CompressionType;
 use super::error::{Result, MdictError};
 
@@ -20,16 +21,19 @@ pub fn decompress_payload(
     expected_size: u64,
 ) -> Result<Vec<u8>> {
     let decompressed = match compression_type {
-        CompressionType::None => payload.to_vec(), // No compression
+        CompressionType::None => {
+            trace!("No compression, copying {} bytes", payload.len());
+            payload.to_vec()
+        }
         CompressionType::Lzo => {
-            // LZO compression
+            trace!("Decompressing with LZO: {} bytes -> {} bytes (expected)", payload.len(), expected_size);
             let mut output = vec![0u8; expected_size as usize];
             lzokay_decompress(payload, &mut output)
                 .map_err(|e| MdictError::DecompressionError(format!("LZO decompression failed: {}", e)))?;
             output
         }
         CompressionType::Zlib => {
-            // Zlib compression
+            trace!("Decompressing with Zlib: {} bytes -> {} bytes (expected)", payload.len(), expected_size);
             let mut output = Vec::with_capacity(expected_size as usize);
             let mut decoder = ZlibDecoder::new(payload);
             decoder

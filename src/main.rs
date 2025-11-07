@@ -2,16 +2,21 @@ use mdict_reader::MdictReader;
 use std::env;
 
 fn main() {
+    // Initialize logger (simple stderr logger)
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+        .init();
+
     let args: Vec<String> = env::args().collect();
-    
+
     if args.len() < 2 {
         eprintln!("Usage: {} <path-to-mdx-file> [--passcode <REG_CODE>,<EMAIL>]", args[0]);
         std::process::exit(1);
     }
-    
+
     let mdx_path = &args[1];
     let mut passcode: Option<(&str, &str)> = None;
     let mut passcode_storage: Option<(String, String)> = None;
+    
     // Parse --passcode argument
     if let Some(passcode_idx) = args.iter().position(|arg| arg == "--passcode") {
         if let Some(passcode_str) = args.get(passcode_idx + 1) {
@@ -27,51 +32,65 @@ fn main() {
             std::process::exit(1);
         }
     }
+    
     if let Some((ref reg_code, ref email)) = passcode_storage {
         passcode = Some((reg_code, email));
     }
-    
-    println!("Reading MDict file: {}", mdx_path);
-    if passcode.is_some() {
-        println!("Using provided passcode.");
-    }
+
+    println!("\n{}", "=".repeat(60));
+    println!("MDict Reader");
     println!("{}", "=".repeat(60));
-    
+    println!("File: {}", mdx_path);
+    if passcode.is_some() {
+        println!("Passcode: provided");
+    }
+    println!("{}\n", "=".repeat(60));
+
     // Pass the optional passcode to the reader
     match MdictReader::new(mdx_path, passcode) {
         Ok(reader) => {
             println!("\n{}", "=".repeat(60));
-            println!("SUCCESS! Reading completed.");
+            println!("✓ SUCCESS");
             println!("{}", "=".repeat(60));
-            
+        
             println!("\nDictionary Information:");
-            println!("  Title: {}", reader.header.title);
-            println!("  Version: {}", reader.header.engine_version);
-            println!("  Encoding: {}", reader.header.encoding.name());
-            println!("  Encrypted: {:?}", reader.header.encryption_flags);
-            
+            println!("  Title:       {}", reader.header.title);
+            println!("  Version:     {}", reader.header.engine_version);
+            println!("  Encoding:    {}", reader.header.encoding.name());
+            println!("  Encrypted:   blocks={}, index={}", 
+                     reader.header.encryption_flags.encrypt_record_blocks,
+                     reader.header.encryption_flags.encrypt_key_index);
+        
             if let Some(desc) = &reader.header.description {
                 println!("  Description: {}", desc);
             }
-            
+        
             println!("\nStatistics:");
-            println!("  Total key entries: {}", reader.all_keys.len());
-            println!("  Key blocks: {}", reader.key_blocks.len());
-            println!("  Record blocks: {}", reader.record_blocks.len());
-            println!("  Total record data: {} bytes", reader.all_records_decompressed.len());
+            println!("  Key entries:    {}", reader.all_keys.len());
+            println!("  Key blocks:     {}", reader.key_blocks.len());
+            println!("  Record blocks:  {}", reader.record_blocks.len());
+            println!("  Record data:    {} bytes", reader.all_records_decompressed.len());
+        
+            // Define how many sample entries to show
+            let sample_count = 100;
             
-            println!("\nSample Key Entries (first 10):");
-            for (i, key_entry) in reader.all_keys.iter().take(10).enumerate() {
-                println!("  {}. [{}] {}", i + 1, key_entry.id, key_entry.text);
+            println!("\nSample Key Entries (first {}):", sample_count);
+            for (i, key_entry) in reader.all_keys.iter().take(sample_count).enumerate() {
+                println!("  {:2}. [id={}] {}", i + 1, key_entry.id, key_entry.text);
+            }
+        
+            if reader.all_keys.len() > sample_count {
+                println!("  ... and {} more entries", reader.all_keys.len() - sample_count);
             }
             
-            if reader.all_keys.len() > 10 {
-                println!("  ... and {} more", reader.all_keys.len() - 10);
-            }
+            println!();
         }
         Err(e) => {
-            eprintln!("\nERROR: Failed to read MDict file");
-            eprintln!("  {}", e);
+            eprintln!("\n{}", "=".repeat(60));
+            eprintln!("✗ ERROR");
+            eprintln!("{}", "=".repeat(60));
+            eprintln!("Failed to read MDict file: {}", e);
+            eprintln!();
             std::process::exit(1);
         }
     }

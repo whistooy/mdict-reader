@@ -3,6 +3,7 @@
 use byteorder::{BigEndian, LittleEndian, ByteOrder};
 use adler32::adler32;
 use ripemd::{Digest, Ripemd128};
+use log::trace;
 use super::{crypto, compression};
 use super::models::{CompressionType, EncryptionType};
 use super::error::{Result, MdictError};
@@ -35,11 +36,20 @@ pub fn decode_block(
     let checksum_expected = BigEndian::read_u32(&raw_block[4..8]);
     let payload = &raw_block[8..];
 
+    trace!(
+        "Decoding block: compression={:?}, encryption={:?}, expected_size={} bytes",
+        compression_type, encryption_type, expected_decompressed_size
+    );
+
     // Determine decryption key
     let decryption_key: [u8; 16] = match master_key {
-        Some(key) => *key,
+        Some(key) => {
+            trace!("Using master key for decryption");
+            *key
+        }
         None => {
             // Derive key from block's own checksum (used when no master key)
+            trace!("Deriving decryption key from block checksum");
             let mut hasher = Ripemd128::new();
             hasher.update(&raw_block[4..8]);
             hasher.finalize().into()
@@ -64,6 +74,7 @@ pub fn decode_block(
             actual: checksum_actual,
         });
     }
+    trace!("Block checksum verified: {:#010x}", checksum_actual);
 
     Ok(decompressed)
 }

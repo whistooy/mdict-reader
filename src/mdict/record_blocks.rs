@@ -2,6 +2,7 @@
 
 use std::fs::File;
 use std::io::Read;
+use log::{debug, info, trace};
 use super::models::{MdictHeader, KeyBlockInfo, RecordBlockInfo, RecordBlock};
 use super::{utils, decoder};
 use super::error::{Result, MdictError};
@@ -20,13 +21,13 @@ pub fn parse_info(
     header: &MdictHeader,
     key_info: &KeyBlockInfo,
 ) -> Result<RecordBlockInfo> {
-    println!("=== Parsing Record Block Info ===");
-    
+    info!("Parsing record block info section");
+
     let num_record_blocks = utils::read_number(file, header.version.number_width())?;
     let num_entries = utils::read_number(file, header.version.number_width())?;
     let record_index_len = utils::read_number(file, header.version.number_width())?;
     let record_blocks_len = utils::read_number(file, header.version.number_width())?;
-    
+
     // Sanity check: entry count should match key blocks
     if num_entries != key_info.num_entries {
         return Err(MdictError::CountMismatch {
@@ -35,9 +36,12 @@ pub fn parse_info(
             found: num_entries,
         });
     }
-    
-    println!("Record block info: {} blocks, {} entries", num_record_blocks, num_entries);
-    
+
+    info!(
+        "Record block info: blocks={}, entries={}, index={} bytes, data={} bytes",
+        num_record_blocks, num_entries, record_index_len, record_blocks_len
+    );
+
     Ok(RecordBlockInfo {
         num_record_blocks,
         num_entries,
@@ -55,14 +59,14 @@ pub fn parse_index(
     info: &RecordBlockInfo,
     header: &MdictHeader,
 ) -> Result<Vec<RecordBlock>> {
-    println!("=== Parsing Record Block Index ===");
-    
+    info!("Parsing record block index");
+
     let mut index_data = vec![0u8; info.record_index_len as usize];
     file.read_exact(&mut index_data)?;
-    
+
     let mut blocks = Vec::new();
     let mut reader = &index_data[..];
-    
+
     while !reader.is_empty() {
         let compressed_size = utils::read_number(&mut reader, header.version.number_width())?;
         let decompressed_size = utils::read_number(&mut reader, header.version.number_width())?;
@@ -71,7 +75,7 @@ pub fn parse_index(
             decompressed_size,
         });
     }
-    
+
     // Verify block count
     if blocks.len() as u64 != info.num_record_blocks {
         return Err(MdictError::CountMismatch {
@@ -80,8 +84,8 @@ pub fn parse_index(
             found: blocks.len() as u64,
         });
     }
-    
-    println!("Record block index: {} blocks", blocks.len());
+
+    debug!("Record block index parsed: {} blocks defined", blocks.len());
     Ok(blocks)
 }
 
@@ -95,35 +99,39 @@ pub fn decompress_all(
     blocks: &[RecordBlock],
     header: &MdictHeader,
 ) -> Result<Vec<u8>> {
-    println!("=== Decompressing Record Blocks ===");
-    
+    info!("Decompressing record blocks ({} blocks)", blocks.len());
+
     // Calculate total decompressed size
     let total_size: usize = blocks
         .iter()
         .map(|b| b.decompressed_size as usize)
         .sum();
-    
+    debug!("Expected total decompressed size: {} bytes", total_size);
+
     let mut all_records = Vec::with_capacity(total_size);
-    
+
     for (idx, block_meta) in blocks.iter().enumerate() {
         // Read compressed block
         let mut compressed = vec![0u8; block_meta.compressed_size as usize];
         file.read_exact(&mut compressed)?;
-        
+
         // Decode block (decrypt + decompress + verify)
         let decompressed = decoder::decode_block(
             &compressed,
             block_meta.decompressed_size,
             header.master_key.as_ref(),
         )?;
-        
+
         all_records.extend_from_slice(&decompressed);
-        
-        if (idx + 1) % 100 == 0 {
-            println!("  Processed {}/{} blocks", idx + 1, blocks.len());
+
+        // Log progress at intervals
+        if (idx + 1) % 100 == 0 || idx + 1 == blocks.len() {
+            debug!("Decompressed {}/{} record blocks ({} bytes so far)", idx + 1, blocks.len(), all_records.len());
+        } else {
+            trace!("Decompressed {}/{} record blocks ({} bytes so far)", idx + 1, blocks.len(), all_records.len());
         }
     }
-    
+
     // Verify total size
     if all_records.len() != total_size {
         return Err(MdictError::SizeMismatch {
@@ -132,7 +140,7 @@ pub fn decompress_all(
             found: all_records.len() as u64,
         });
     }
-    
-    println!("Record blocks decompressed: {} bytes total", all_records.len());
+
+    info!("Record blocks decompressed successfully: {} bytes total", all_records.len());
     Ok(all_records)
 }

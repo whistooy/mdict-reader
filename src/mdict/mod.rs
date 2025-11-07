@@ -11,6 +11,7 @@ mod decoder;
 mod utils;
 
 use std::fs::File;
+use log::info;
 use models::*;
 pub use error::{MdictError, Result};
 
@@ -43,31 +44,32 @@ impl MdictReader {
     /// - Unsupported version (3.0+)
     /// - Checksum verification fails
     pub fn new(path: &str, passcode: Option<(&str, &str)>) -> Result<Self> {
+        info!("Opening MDict file: {}", path);
         let mut file = File::open(path)?;
 
         // Parse header (includes master key derivation if encrypted)
         let mdict_header = header::parse(&mut file, passcode)?;
-        
+    
         // Parse key block metadata
         let key_block_info = key_blocks::parse_info(
             &mut file, 
             &mdict_header
         )?;
-        
+    
         // Parse key index to get key block boundaries
         let key_index_decomp = key_blocks::parse_index(
             &mut file, 
             &key_block_info, 
             &mdict_header
         )?;
-        
+    
         // Extract key block metadata from index
         let key_blocks_meta = key_blocks::parse_index_metadata(
             &key_index_decomp, 
             &mdict_header, 
             &key_block_info
         )?;
-        
+    
         // Parse and decode all key blocks to extract key entries
         let all_key_entries = key_blocks::parse_blocks(
             &mut file, 
@@ -75,27 +77,30 @@ impl MdictReader {
             &key_blocks_meta, 
             &mdict_header
         )?;
-        
+    
         // Parse record block metadata
         let record_block_info = record_blocks::parse_info(
             &mut file, 
             &mdict_header, 
             &key_block_info
         )?;
-        
+    
         // Parse record block index
         let record_blocks_meta = record_blocks::parse_index(
             &mut file, 
             &record_block_info, 
             &mdict_header
         )?;
-        
+    
         // Decompress all record blocks
         let all_records_decompressed = record_blocks::decompress_all(
             &mut file, 
             &record_blocks_meta, 
             &mdict_header
         )?;
+
+        info!("MDict file parsed successfully: {} entries, {} bytes of record data", 
+              all_key_entries.len(), all_records_decompressed.len());
 
         Ok(Self {
             header: mdict_header,
