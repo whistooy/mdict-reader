@@ -74,7 +74,7 @@ pub fn derive_key_for_v2_index(key_index_block: &[u8]) -> [u8; 16] {
     
     let mut hasher = Ripemd128::new();
     hasher.update(&key_index_block[4..8]); // Checksum bytes
-    hasher.update(&0x3695u32.to_le_bytes()); // Magic constant
+    hasher.update(0x3695u32.to_le_bytes()); // Magic constant
     hasher.finalize().into()
 }
 
