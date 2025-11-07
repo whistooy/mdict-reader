@@ -3,6 +3,7 @@
 use std::io::Read;
 use flate2::read::ZlibDecoder;
 use lzokay::decompress::decompress as lzokay_decompress;
+use super::models::CompressionType;
 use super::error::{Result, MdictError};
 
 /// Decompress a payload using the specified compression type.
@@ -15,19 +16,19 @@ use super::error::{Result, MdictError};
 /// Validates that decompressed size matches expected size.
 pub fn decompress_payload(
     payload: &[u8],
-    compression_type: u32,
+    compression_type: CompressionType,
     expected_size: u64,
 ) -> Result<Vec<u8>> {
     let decompressed = match compression_type {
-        0 => payload.to_vec(), // No compression
-        1 => {
+        CompressionType::None => payload.to_vec(), // No compression
+        CompressionType::Lzo => {
             // LZO compression
             let mut output = vec![0u8; expected_size as usize];
             lzokay_decompress(payload, &mut output)
                 .map_err(|e| MdictError::DecompressionError(format!("LZO decompression failed: {}", e)))?;
             output
         }
-        2 => {
+        CompressionType::Zlib => {
             // Zlib compression
             let mut output = Vec::with_capacity(expected_size as usize);
             let mut decoder = ZlibDecoder::new(payload);
@@ -35,8 +36,7 @@ pub fn decompress_payload(
                 .read_to_end(&mut output)
                 .map_err(|e| MdictError::DecompressionError(format!("Zlib decompression failed: {}", e)))?;
             output
-        }   
-        _ => return Err(MdictError::DecompressionError(format!("Unknown compression type: {}", compression_type))),
+        }
     };
 
     // Verify decompressed size matches expectation

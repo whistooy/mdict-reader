@@ -3,9 +3,8 @@
 use std::fs::File;
 use std::io::{Read, Cursor};
 use byteorder::{BigEndian, LittleEndian, ByteOrder, ReadBytesExt};
-use encoding_rs::{UTF_16LE, UTF_16BE};
 use adler32::adler32;
-use super::models::{MdictHeader, KeyBlockInfo, KeyBlock, KeyEntry};
+use super::models::{MdictHeader, MdictVersion, KeyBlockInfo, KeyBlock, KeyEntry, CompressionType};
 use super::{utils, crypto, decoder};
 use super::error::{Result, MdictError};
 
@@ -30,7 +29,10 @@ use super::error::{Result, MdictError};
 pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo> {
     println!("=== Parsing Key Block Info ===");
     
-    let info_size = if header.version >= 2.0 { 40 } else { 16 };
+    let info_size = match header.version {
+        MdictVersion::V1 => 16,
+        MdictVersion::V2 => 40,
+    };
     let mut info_bytes = vec![0u8; info_size];
     file.read_exact(&mut info_bytes)?;
     
@@ -40,7 +42,7 @@ pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo>
     }
     
     // Verify checksum (v2.0+ only)
-    if header.version >= 2.0 {
+    if header.version == MdictVersion::V2 {
         let checksum_expected = file.read_u32::<BigEndian>()?;
         let checksum_actual = adler32(&info_bytes[..])?;
         if checksum_actual != checksum_expected {
@@ -53,15 +55,14 @@ pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo>
     
     // Parse fields
     let mut reader = &info_bytes[..];
-    let num_key_blocks = utils::read_number(&mut reader, header.number_width)?;
-    let num_entries = utils::read_number(&mut reader, header.number_width)?;
-    let key_index_decomp_len = if header.version >= 2.0 {
-        Some(utils::read_number(&mut reader, header.number_width)?)
-    } else {
-        None
+    let num_key_blocks = utils::read_number(&mut reader, header.version.number_width())?;
+    let num_entries = utils::read_number(&mut reader, header.version.number_width())?;
+    let key_index_decomp_len = match header.version {
+        MdictVersion::V1 => None,
+        MdictVersion::V2 => Some(utils::read_number(&mut reader, header.version.number_width())?),
     };
-    let key_index_comp_len = utils::read_number(&mut reader, header.number_width)?;
-    let key_blocks_len = utils::read_number(&mut reader, header.number_width)?;
+    let key_index_comp_len = utils::read_number(&mut reader, header.version.number_width())?;
+    let key_blocks_len = utils::read_number(&mut reader, header.version.number_width())?;
     
     println!("Key block info: {} blocks, {} entries", num_key_blocks, num_entries);
     
@@ -106,7 +107,7 @@ pub fn parse_index(
         };
         
         // Decompress
-        let compression_type = LittleEndian::read_u32(&compressed[0..4]);
+        let compression_type = CompressionType::try_from(LittleEndian::read_u32(&compressed[0..4]) as u8)?;
         let decompressed = super::compression::decompress_payload(
             &payload,
             compression_type,
@@ -154,7 +155,7 @@ pub fn parse_index_metadata(
     
     while !reader.is_empty() {
         // Number of entries in this block
-        let num_entries = utils::read_number(&mut reader, header.number_width)?;
+        let num_entries = utils::read_number(&mut reader, header.version.number_width())?;
         total_entries += num_entries;
         
         // Skip first and last key text (we don't need them)
@@ -162,8 +163,8 @@ pub fn parse_index_metadata(
         skip_key_text(&mut reader, header)?;
         
         // Block sizes
-        let compressed_size = utils::read_number(&mut reader, header.number_width)?;
-        let decompressed_size = utils::read_number(&mut reader, header.number_width)?;
+        let compressed_size = utils::read_number(&mut reader, header.version.number_width())?;
+        let decompressed_size = utils::read_number(&mut reader, header.version.number_width())?;
         
         blocks.push(KeyBlock {
             compressed_size,
@@ -218,7 +219,7 @@ pub fn parse_blocks(
         // Parse entries from decompressed data
         let mut block_reader = &decompressed[..];
         while !block_reader.is_empty() {
-            let record_id = utils::read_number(&mut block_reader, header.number_width)?;
+            let record_id = utils::read_number(&mut block_reader, header.version.number_width())?;
             let text = read_null_terminated_string(&mut block_reader, header.encoding)?;
             key_entries.push(KeyEntry {
                 id: record_id,
@@ -248,24 +249,16 @@ pub fn parse_blocks(
 /// - v2.x: 2-byte length + text + terminator (1 or 2 bytes)
 fn skip_key_text(reader: &mut &[u8], header: &MdictHeader) -> Result<()> {
     // Read text length in "units" (1 unit = 1 byte for UTF-8, 2 bytes for UTF-16)
-    let text_len_units = if header.version >= 2.0 {
-        utils::read_small_number(reader, 2)?
-    } else {
-        utils::read_small_number(reader, 1)?
-    };
+    let text_len_units = utils::read_small_number(reader, header.version.small_number_width())?;
     
     // v2.x has a terminator (1 unit)
-    let terminator_units = if header.version >= 2.0 { 1 } else { 0 };
-    
-    // Calculate unit width (UTF-16 = 2 bytes/unit, others = 1 byte/unit)
-    let unit_width = if header.encoding == UTF_16LE || header.encoding == UTF_16BE {
-        2
-    } else {
-        1
+    let terminator_units = match header.version {
+        MdictVersion::V1 => 0,
+        MdictVersion::V2 => 1,
     };
     
     // Calculate total bytes to skip
-    let total_bytes = ((text_len_units + terminator_units) as usize) * unit_width;
+    let total_bytes = ((text_len_units + terminator_units) as usize) * utils::unit_width(header.encoding);
     
     if reader.len() < total_bytes {
         return Err(MdictError::InvalidFormat("Incomplete key text in index".to_string()));
@@ -283,28 +276,21 @@ fn read_null_terminated_string(
     reader: &mut &[u8],
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<String> {
-    let is_utf16 = encoding == UTF_16LE || encoding == UTF_16BE;
-    let terminator_width = if is_utf16 { 2 } else { 1 };
+    let width = utils::unit_width(encoding);
+    let terminator = vec![0u8; width];
     
     // Find null terminator
-    let end_pos = if is_utf16 {
-        reader
-            .windows(2)
-            .position(|w| w == [0, 0])
-            .ok_or_else(|| MdictError::InvalidFormat("Missing null terminator in UTF-16 string".to_string()))?
-    } else {
-        reader
-            .iter()
-            .position(|&b| b == 0)
-            .ok_or_else(|| MdictError::InvalidFormat("Missing null terminator in string".to_string()))?
-    };
+    let end_pos = reader
+        .windows(width)
+        .position(|w| w == terminator.as_slice())
+        .ok_or_else(|| MdictError::InvalidFormat("Missing null terminator in string".to_string()))?;
     
     // Decode text
     let text_bytes = &reader[..end_pos];
     let (decoded, _, _) = encoding.decode(text_bytes);
     
     // Advance reader past text and terminator
-    *reader = &reader[end_pos + terminator_width..];
+    *reader = &reader[end_pos + width..];
     
     Ok(decoded.into_owned())
 }

@@ -8,7 +8,7 @@ use encoding_rs::{Encoding, UTF_16LE};
 use quick_xml::{events::Event, Reader};
 use adler32::adler32;
 use hex;
-use super::models::{MdictHeader, EncryptionFlags};
+use super::models::{MdictHeader, MdictVersion, EncryptionFlags};
 use super::crypto;
 use super::error::{Result, MdictError};
 
@@ -59,7 +59,7 @@ pub fn parse(file: &mut File) -> Result<MdictHeader> {
     header.master_key = derive_master_key_if_needed(&header)?;
     
     println!("Header parsed: version={}, title={}, encrypted={:?}", 
-        header.version, header.title, header.encryption_flags);
+        header.engine_version, header.title, header.encryption_flags);
     
     Ok(header)
 }
@@ -98,15 +98,15 @@ fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<Mdict
         .get("GeneratedByEngineVersion")
         .map(String::as_str)
         .unwrap_or("1.0");
-    let version: f32 = version_str.parse().map_err(|_| MdictError::InvalidFormat("Invalid version string in header".to_string()))?;
-    
-    // Check version support
-    if version >= 3.0 {
-        return Err(MdictError::UnsupportedVersion(version));
-    }
-    
-    // Version determines number width (v1=4 bytes, v2=8 bytes)
-    let number_width = if version >= 2.0 { 8 } else { 4 };
+    let version_f32: f32 = version_str.parse().map_err(|e| {
+        MdictError::InvalidFormat(format!(
+            "Could not parse 'GeneratedByEngineVersion': {}",
+            e
+        ))
+    })?;
+
+    // Convert to behavioral enum for parsing logic
+    let version_enum = MdictVersion::try_from(version_f32)?;
     
     // Parse encoding (normalize GBK/GB2312 to GB18030)
     let encoding = attrs
@@ -134,10 +134,10 @@ fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<Mdict
     let stylesheet = attrs.get("StyleSheet").cloned();
     
     Ok(MdictHeader {
-        version,
+        version: version_enum,
+        engine_version: version_str.to_string(),
         encryption_flags,
         encoding,
-        number_width,
         title,
         description,
         stylesheet,

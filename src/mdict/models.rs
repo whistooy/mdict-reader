@@ -1,6 +1,7 @@
 //! Data structures representing MDict format components
 
 use encoding_rs::Encoding;
+use super::error::{MdictError, Result};
 
 /// Encryption flags from MDict header.
 /// 
@@ -17,10 +18,10 @@ pub struct EncryptionFlags {
 /// Contains version, encoding, encryption settings, and metadata.
 #[derive(Debug)]
 pub struct MdictHeader {
-    pub version: f32,
+    pub version: MdictVersion,
+    pub engine_version: String,
     pub encryption_flags: EncryptionFlags,
     pub encoding: &'static Encoding,
-    pub number_width: usize,
     pub title: String,
     pub description: Option<String>,
     pub stylesheet: Option<String>,
@@ -67,4 +68,79 @@ pub struct RecordBlockInfo {
 pub struct RecordBlock {
     pub compressed_size: u64,
     pub decompressed_size: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MdictVersion {
+    V1,
+    V2,
+}
+
+impl MdictVersion {
+    /// Get the width (in bytes) for numbers in this format version.
+    pub fn number_width(&self) -> usize {
+        match self {
+            MdictVersion::V1 => 4,
+            MdictVersion::V2 => 8,
+        }
+    }
+
+    /// Get the width (in bytes) for small numbers (text length prefixes) in this format version.
+    pub fn small_number_width(&self) -> usize {
+        match self {
+            MdictVersion::V1 => 1,
+            MdictVersion::V2 => 2,
+        }
+    }
+}
+
+impl TryFrom<f32> for MdictVersion {
+    type Error = MdictError;
+    fn try_from(v: f32) -> Result<Self> {
+        if v < 2.0 {
+            Ok(Self::V1)
+        } else if v < 3.0 {
+            Ok(Self::V2)
+        } else {
+            Err(MdictError::UnsupportedVersion(v))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionType {
+    None,
+    Lzo,
+    Zlib,
+}
+
+impl TryFrom<u8> for CompressionType {
+    type Error = MdictError;
+    fn try_from(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::None),
+            1 => Ok(Self::Lzo),
+            2 => Ok(Self::Zlib),
+            _ => Err(MdictError::InvalidFormat(format!("Unknown compression type: {}", value))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncryptionType {
+    None,
+    Fast,
+    Salsa20,
+}
+
+impl TryFrom<u8> for EncryptionType {
+    type Error = MdictError;
+    fn try_from(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::None),
+            1 => Ok(Self::Fast),
+            2 => Ok(Self::Salsa20),
+            _ => Err(MdictError::InvalidFormat(format!("Unknown encryption type: {}", value))),
+        }
+    }
 }

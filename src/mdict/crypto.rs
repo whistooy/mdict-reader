@@ -2,6 +2,7 @@
 
 use ripemd::{Digest, Ripemd128};
 use salsa20::{cipher::{KeyIvInit, StreamCipher}, Salsa8};
+use super::models::EncryptionType;
 use super::error::{Result, MdictError};
 
 /// Derive master encryption key from registration code and user ID.
@@ -76,21 +77,20 @@ pub fn derive_key_for_v2_index(key_index_block: &[u8]) -> [u8; 16] {
 /// - 2: Salsa20/8
 pub fn decrypt_payload(
     payload: &[u8],
-    encryption_type: u8,
+    encryption_type: EncryptionType,
     key: &[u8; 16],
 ) -> Result<Vec<u8>> {
     match encryption_type {
-        0 => Ok(payload.to_vec()), // No encryption
-        1 => {
+        EncryptionType::None => Ok(payload.to_vec()), // No encryption
+        EncryptionType::Fast => {
             let mut decrypted = payload.to_vec();
             fast_decrypt(&mut decrypted, key);
             Ok(decrypted)
         }
-        2 => {
+        EncryptionType::Salsa20 => {
             let mut decrypted = payload.to_vec();
             salsa_decrypt(&mut decrypted, key);
             Ok(decrypted)
         }
-        _ => Err(MdictError::DecryptionError(format!("Unknown encryption type: {}", encryption_type))),
     }
 }

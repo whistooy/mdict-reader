@@ -22,10 +22,10 @@ pub fn parse_info(
 ) -> Result<RecordBlockInfo> {
     println!("=== Parsing Record Block Info ===");
     
-    let num_record_blocks = utils::read_number(file, header.number_width)?;
-    let num_entries = utils::read_number(file, header.number_width)?;
-    let record_index_len = utils::read_number(file, header.number_width)?;
-    let record_blocks_len = utils::read_number(file, header.number_width)?;
+    let num_record_blocks = utils::read_number(file, header.version.number_width())?;
+    let num_entries = utils::read_number(file, header.version.number_width())?;
+    let record_index_len = utils::read_number(file, header.version.number_width())?;
+    let record_blocks_len = utils::read_number(file, header.version.number_width())?;
     
     // Sanity check: entry count should match key blocks
     if num_entries != key_info.num_entries {
@@ -64,8 +64,8 @@ pub fn parse_index(
     let mut reader = &index_data[..];
     
     while !reader.is_empty() {
-        let compressed_size = utils::read_number(&mut reader, header.number_width)?;
-        let decompressed_size = utils::read_number(&mut reader, header.number_width)?;
+        let compressed_size = utils::read_number(&mut reader, header.version.number_width())?;
+        let decompressed_size = utils::read_number(&mut reader, header.version.number_width())?;
         blocks.push(RecordBlock {
             compressed_size,
             decompressed_size,

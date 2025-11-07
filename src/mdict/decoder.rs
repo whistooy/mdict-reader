@@ -4,6 +4,7 @@ use byteorder::{BigEndian, LittleEndian, ByteOrder};
 use adler32::adler32;
 use ripemd::{Digest, Ripemd128};
 use super::{crypto, compression};
+use super::models::{CompressionType, EncryptionType};
 use super::error::{Result, MdictError};
 
 /// Decode a compressed/encrypted block.
@@ -29,8 +30,8 @@ pub fn decode_block(
 
     // Parse block header
     let info = LittleEndian::read_u32(&raw_block[0..4]);
-    let compression_type = (info & 0xF) as u8;
-    let encryption_type = ((info >> 4) & 0xF) as u8;
+    let compression_type = CompressionType::try_from((info & 0xF) as u8)?;
+    let encryption_type = EncryptionType::try_from(((info >> 4) & 0xF) as u8)?;
     let checksum_expected = BigEndian::read_u32(&raw_block[4..8]);
     let payload = &raw_block[8..];
 
@@ -51,7 +52,7 @@ pub fn decode_block(
     // Step 2: Decompress
     let decompressed = compression::decompress_payload(
         &decrypted,
-        compression_type as u32,
+        compression_type,
         expected_decompressed_size,
     )?;
 

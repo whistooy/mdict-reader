@@ -22,7 +22,7 @@ fn main() {
             
             println!("\nDictionary Information:");
             println!("  Title: {}", reader.header.title);
-            println!("  Version: {}", reader.header.version);
+            println!("  Version: {}", reader.header.engine_version);
             println!("  Encoding: {}", reader.header.encoding.name());
             println!("  Encrypted: {:?}", reader.header.encryption_flags);
             
