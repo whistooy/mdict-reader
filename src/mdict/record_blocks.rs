@@ -1,10 +1,10 @@
 //! Record block parsing (actual dictionary content)
 
 use std::fs::File;
-use std::io::Read;
-use log::{debug, info, trace};
-use super::models::{MdictHeader, KeyBlockInfo, RecordBlockInfo, RecordBlock};
-use super::{utils, decoder};
+use std::io::{Read, Seek};
+use log::{debug, info};
+use super::models::{MdictHeader, KeyBlockInfo, RecordBlockInfo, BlockMeta};
+use super::utils;
 use super::error::{Result, MdictError};
 
 /// Parse record block info section.
@@ -58,7 +58,7 @@ pub fn parse_index(
     file: &mut File,
     info: &RecordBlockInfo,
     header: &MdictHeader,
-) -> Result<Vec<RecordBlock>> {
+) -> Result<Vec<BlockMeta>> {
     info!("Parsing record block index");
 
     let mut index_data = vec![0u8; info.record_index_len as usize];
@@ -66,14 +66,17 @@ pub fn parse_index(
 
     let mut blocks = Vec::new();
     let mut reader = index_data.as_slice();
+    let mut file_offset = file.stream_position()?;
 
     while !reader.is_empty() {
         let compressed_size = utils::read_number(&mut reader, header.version.number_width())?;
         let decompressed_size = utils::read_number(&mut reader, header.version.number_width())?;
-        blocks.push(RecordBlock {
+        blocks.push(BlockMeta {
             compressed_size,
             decompressed_size,
+            file_offset,
         });
+        file_offset += compressed_size;
     }
 
     // Verify block count
@@ -87,61 +90,4 @@ pub fn parse_index(
 
     debug!("Record block index parsed: {} blocks defined", blocks.len());
     Ok(blocks)
-}
-
-/// Decompress all record blocks into a single contiguous buffer.
-/// 
-/// Each block is decoded (decrypted + decompressed + verified) and
-/// concatenated together. The resulting buffer contains all dictionary
-/// content in order.
-pub fn decompress_all(
-    file: &mut File,
-    blocks: &[RecordBlock],
-    header: &MdictHeader,
-) -> Result<Vec<u8>> {
-    info!("Decompressing record blocks ({} blocks)", blocks.len());
-
-    // Calculate total decompressed size
-    let total_size: usize = blocks
-        .iter()
-        .map(|b| b.decompressed_size as usize)
-        .sum();
-    debug!("Expected total decompressed size: {} bytes", total_size);
-
-    let mut all_records = Vec::with_capacity(total_size);
-
-    for (idx, block_meta) in blocks.iter().enumerate() {
-        // Read compressed block
-        let mut compressed = vec![0u8; block_meta.compressed_size as usize];
-        file.read_exact(&mut compressed)?;
-
-        // Decrypt, decompress, and verify the block.
-        // NOTE: Mutates the source buffer in-place during decryption.
-        let decompressed = decoder::decode_block(
-            &mut compressed,
-            block_meta.decompressed_size,
-            header.master_key.as_ref(),
-        )?;
-
-        all_records.extend_from_slice(&decompressed);
-
-        // Log progress at intervals
-        if (idx + 1) % 100 == 0 || idx + 1 == blocks.len() {
-            debug!("Decompressed {}/{} record blocks ({} bytes so far)", idx + 1, blocks.len(), all_records.len());
-        } else {
-            trace!("Decompressed {}/{} record blocks ({} bytes so far)", idx + 1, blocks.len(), all_records.len());
-        }
-    }
-
-    // Verify total size
-    if all_records.len() != total_size {
-        return Err(MdictError::SizeMismatch {
-            context: "total decompressed record buffer",
-            expected: total_size as u64,
-            found: all_records.len() as u64,
-        });
-    }
-
-    info!("Record blocks decompressed successfully: {} bytes total", all_records.len());
-    Ok(all_records)
 }

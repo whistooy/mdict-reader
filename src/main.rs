@@ -2,8 +2,8 @@ use mdict_reader::MdictReader;
 use std::env;
 
 fn main() {
-    // Initialize logger (simple stderr logger)
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+    // Initialize logger
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .init();
 
     let args: Vec<String> = env::args().collect();
@@ -46,11 +46,10 @@ fn main() {
     }
     println!("{}\n", "=".repeat(60));
 
-    // Pass the optional passcode to the reader
     match MdictReader::new(mdx_path, passcode) {
         Ok(reader) => {
             println!("\n{}", "=".repeat(60));
-            println!("✓ SUCCESS");
+            println!("✓ SUCCESS - Metadata loaded");
             println!("{}", "=".repeat(60));
         
             println!("\nDictionary Information:");
@@ -64,23 +63,55 @@ fn main() {
             if let Some(desc) = &reader.header.description {
                 println!("  Description: {}", desc);
             }
-        
+
             println!("\nStatistics:");
-            println!("  Key entries:    {}", reader.all_keys.len());
-            println!("  Key blocks:     {}", reader.key_blocks.len());
-            println!("  Record blocks:  {}", reader.record_blocks.len());
-            println!("  Record data:    {} bytes", reader.all_records_decompressed.len());
+            println!("  Key entries:    {}", reader.key_block_info.num_entries);
+            println!("  Key blocks:     {}", reader.key_block_info.num_key_blocks);
+            println!("  Record blocks:  {}", reader.record_block_info.num_record_blocks);
         
             // Define how many sample entries to show
             let sample_count = 100;
+            let total_entries = reader.key_block_info.num_entries;
             
-            println!("\nSample Key Entries (first {}):", sample_count);
-            for (i, key_entry) in reader.all_keys.iter().take(sample_count).enumerate() {
-                println!("  {:2}. [id={}] {}", i + 1, key_entry.id, key_entry.text);
+            println!("\nSample Entries & Definitions (first {} of {}):", sample_count, total_entries);
+            
+            for (i, entry_result) in reader.iter_entries().take(sample_count).enumerate() {
+                match entry_result {
+                    Ok((key, location)) => {
+                        println!("  {:2}. Key: {}", i + 1, key);
+
+                        // Now, read the record for this key
+                        match reader.read_record(&location) {
+                            Ok(record_bytes) => {
+                                let definition = reader.decode_record_text(&record_bytes);
+                                
+                                // Truncate for clean display
+                                let mut truncated_def = definition
+                                    .trim()
+                                    .replace('\n', " ")
+                                    .replace('\r', "");
+                                let max_len = 1000;
+                                if truncated_def.chars().count() > max_len {
+                                    truncated_def = truncated_def.chars().take(max_len).collect::<String>() + "...";
+                                }
+
+                                println!("     Def: {}", truncated_def);
+                            }
+                            Err(e) => {
+                                // Handle error reading just this one record
+                                println!("     Def: <Error reading record: {}>", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  Error fetching entry {}: {}", i + 1, e);
+                        break;
+                    }
+                }
             }
         
-            if reader.all_keys.len() > sample_count {
-                println!("  ... and {} more entries", reader.all_keys.len() - sample_count);
+            if total_entries > sample_count as u64 {
+                println!("  ... and {} more entries", total_entries - sample_count as u64);
             }
             
             println!();

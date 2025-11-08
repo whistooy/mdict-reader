@@ -29,6 +29,21 @@ pub struct MdictHeader {
     pub master_key: Option<[u8; 16]>,
 }
 
+/// Information needed to locate and extract a specific record
+#[derive(Debug, Clone)]
+pub struct RecordInfo {
+    /// File position where the compressed block starts
+    pub block_file_offset: u64,
+    /// Size of the compressed block in the file
+    pub block_compressed_size: u64,
+    /// Size after decompression
+    pub block_decompressed_size: u64,
+    /// Offset within the decompressed block where this record starts
+    pub offset_in_block: u64,
+    /// Size of this specific record
+    pub size: u64,
+}
+
 /// Metadata about the key blocks section.
 #[derive(Debug)]
 pub struct KeyBlockInfo {
@@ -38,13 +53,6 @@ pub struct KeyBlockInfo {
     pub key_index_decomp_len: Option<u64>,
     pub key_index_comp_len: u64,
     pub key_blocks_len: u64,
-}
-
-/// Metadata for a single key block.
-#[derive(Debug)]
-pub struct KeyBlock {
-    pub compressed_size: u64,
-    pub decompressed_size: u64,
 }
 
 /// A dictionary key entry with its record ID.
@@ -65,9 +73,10 @@ pub struct RecordBlockInfo {
 
 /// Metadata for a single record block.
 #[derive(Debug)]
-pub struct RecordBlock {
+pub struct BlockMeta {
     pub compressed_size: u64,
     pub decompressed_size: u64,
+    pub file_offset: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

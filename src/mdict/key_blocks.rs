@@ -1,12 +1,12 @@
 //! Key block parsing (index and blocks containing key entries)
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 use byteorder::{BigEndian, LittleEndian, ByteOrder, ReadBytesExt};
 use adler32::adler32;
 use log::{debug, info, trace};
-use super::models::{MdictHeader, MdictVersion, KeyBlockInfo, KeyBlock, KeyEntry, CompressionType};
-use super::{utils, crypto, decoder};
+use super::models::{MdictHeader, MdictVersion, KeyBlockInfo, KeyEntry, CompressionType, BlockMeta};
+use super::{utils, crypto, blocks};
 use super::error::{Result, MdictError};
 
 /// Parse key block info section.
@@ -86,7 +86,10 @@ pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo>
     })
 }
 
-/// Parse key index (metadata about each key block).
+/// Decompress the raw key index block.
+/// 
+/// This function handles decryption and decompression but does not parse the
+/// content of the index.
 /// 
 /// v2.0+ format:
 /// - 4 bytes: Compression type
@@ -95,17 +98,12 @@ pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo>
 /// 
 /// v1.x format:
 /// - N bytes: Raw uncompressed data
-pub fn parse_index(
-    file: &mut File,
+fn decompress_index(
+    compressed: &[u8],
     info: &KeyBlockInfo,
     header: &MdictHeader,
 ) -> Result<Vec<u8>> {
-    info!("Parsing key index (metadata for key blocks)");
-
-    let mut compressed = vec![0u8; info.key_index_comp_len as usize];
-    file.read_exact(&mut compressed)?;
-
-    let decompressed = if let Some(decomp_len) = info.key_index_decomp_len {
+    if let Some(decomp_len) = info.key_index_decomp_len {
         // v2.0+ path: may be encrypted and/or compressed
         debug!(
             "Processing v2.x key index (compressed: {} bytes, decompressed: {} bytes)",
@@ -115,7 +113,7 @@ pub fn parse_index(
         let payload = if header.encryption_flags.encrypt_key_index {
             // Decrypt using key derived from block checksum
             debug!("Decrypting key index (fast decrypt with checksum-derived key)");
-            let key = crypto::derive_key_for_v2_index(&compressed);
+            let key = crypto::derive_key_for_v2_index(compressed);
             let mut decrypted = compressed[8..].to_vec();
             crypto::fast_decrypt(&mut decrypted, &key);
             decrypted
@@ -142,36 +140,41 @@ pub fn parse_index(
                 actual: checksum_actual,
             });
         }
-
-        decompressed
+        debug!("Key index parsed successfully: {} bytes", decompressed.len());
+        Ok(decompressed)
     } else {
         // v1.x path: raw uncompressed data
         debug!("Processing v1.x key index ({} bytes, uncompressed)", info.key_index_comp_len);
-        compressed
-    };
-
-    debug!("Key index parsed successfully: {} bytes", decompressed.len());
-    Ok(decompressed)
+        Ok(compressed.to_vec())
+    }
 }
 
-/// Parse key index metadata to extract key block boundaries.
+/// Reads the key index from the file, decompresses it, and parses it to
+/// extract metadata for each key block.
 /// 
-/// Each entry in the index describes one key block:
+/// Each entry in the decompressed index describes one key block:
 /// - Number of entries in this block
 /// - First key text (length-prefixed string)
 /// - Last key text (length-prefixed string)
 /// - Compressed size
 /// - Decompressed size
-pub fn parse_index_metadata(
-    index_data: &[u8],
-    header: &MdictHeader,
+pub fn parse_index(
+    file: &mut File,
     info: &KeyBlockInfo,
-) -> Result<Vec<KeyBlock>> {
-    info!("Parsing key index metadata (extracting block boundaries)");
+    header: &MdictHeader,
+) -> Result<Vec<BlockMeta>> {
+    info!("Parsing key index");
 
+    let mut compressed = vec![0u8; info.key_index_comp_len as usize];
+    file.read_exact(&mut compressed)?;
+
+    let index_data = decompress_index(compressed.as_slice(), info, header)?;
+    
+    info!("Extracting block boundaries from key index");
     let mut blocks = Vec::new();
-    let mut reader = index_data;
+    let mut reader = index_data.as_slice();
     let mut total_entries = 0u64;
+    let mut file_offset = file.stream_position()?;
 
     while !reader.is_empty() {
         // Number of entries in this block
@@ -186,10 +189,12 @@ pub fn parse_index_metadata(
         let compressed_size = utils::read_number(&mut reader, header.version.number_width())?;
         let decompressed_size = utils::read_number(&mut reader, header.version.number_width())?;
 
-        blocks.push(KeyBlock {
+        blocks.push(BlockMeta {
             compressed_size,
             decompressed_size,
+            file_offset,
         });
+        file_offset += compressed_size;
     }
 
     // Verify total entry count matches
@@ -205,70 +210,28 @@ pub fn parse_index_metadata(
     Ok(blocks)
 }
 
-/// Parse all key blocks to extract key entries.
-/// 
-/// Each block is decoded (decrypted + decompressed), then parsed to extract
-/// individual key entries.
-pub fn parse_blocks(
+/// Decode a specific key block and parse its entries.
+pub fn decode_and_parse_block(
     file: &mut File,
-    info: &KeyBlockInfo,
-    blocks: &[KeyBlock],
+    block_meta: &BlockMeta,
     header: &MdictHeader,
 ) -> Result<Vec<KeyEntry>> {
-    info!("Parsing key blocks ({} blocks containing {} entries)", blocks.len(), info.num_entries);
+    let decompressed_data = blocks::decode_block(file, block_meta, header)?;
+    parse_entries(&decompressed_data, header)
+}
 
-    // Read all key block data at once
-    let mut all_blocks_data = vec![0u8; info.key_blocks_len as usize];
-    file.read_exact(&mut all_blocks_data)?;
-    debug!("Read {} bytes of key block data", info.key_blocks_len);
-    let mut remaining_data = all_blocks_data.as_mut_slice();
-
-    let mut key_entries = Vec::with_capacity(info.num_entries as usize);
-
-    for (idx, block_meta) in blocks.iter().enumerate() {
-        let block_size = block_meta.compressed_size as usize;
-        // Get the slice for the current block from the front of `remaining_data`.
-        let compressed_slice = &mut remaining_data[..block_size];
-        
-        // Decrypt, decompress, and verify the block.
-        // NOTE: Mutates the source buffer in-place during decryption.
-        let decompressed = decoder::decode_block(
-            compressed_slice,
-            block_meta.decompressed_size,
-            header.master_key.as_ref(),
-        )?;
-
-        remaining_data = &mut remaining_data[block_size..];
-
-        // Parse entries from decompressed data
-        let mut block_reader = decompressed.as_slice();
-        while !block_reader.is_empty() {
-            let record_id = utils::read_number(&mut block_reader, header.version.number_width())?;
-            let text = read_null_terminated_string(&mut block_reader, header.encoding)?;
-            key_entries.push(KeyEntry {
-                id: record_id,
-                text,
-            });
-        }
-
-        // Log progress at intervals
-        if (idx + 1) % 100 == 0 || idx + 1 == blocks.len() {
-            debug!("Processed {}/{} key blocks ({} entries so far)", idx + 1, blocks.len(), key_entries.len());
-        } else {
-            trace!("Processed {}/{} key blocks ({} entries so far)", idx + 1, blocks.len(), key_entries.len());
-        }
+/// Parse key entries from decompressed data.
+fn parse_entries(data: &[u8], header: &MdictHeader) -> Result<Vec<KeyEntry>> {
+    let mut entries = Vec::new();
+    let mut reader = data;
+    
+    while !reader.is_empty() {
+        let record_id = utils::read_number(&mut reader, header.version.number_width())?;
+        let text = read_null_terminated_string(&mut reader, header.encoding)?;
+        entries.push(KeyEntry { id: record_id, text });
     }
-
-    if key_entries.len() as u64 != info.num_entries {
-        return Err(MdictError::CountMismatch {
-            item_type: "parsed key entries",
-            expected: info.num_entries,
-            found: key_entries.len() as u64,
-        });
-    }
-
-    info!("Key blocks parsed successfully: {} entries extracted", key_entries.len());
-    Ok(key_entries)
+    
+    Ok(entries)
 }
 
 // --- Format-specific helper functions ---

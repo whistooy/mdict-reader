@@ -8,7 +8,7 @@ use super::{crypto, compression};
 use super::models::{CompressionType, EncryptionType};
 use super::error::{Result, MdictError};
 
-/// Decode a compressed/encrypted block.
+/// Decode a compressed/encrypted payload.
 /// 
 /// # Arguments
 /// * `raw_block` - The raw block data from the file. **This buffer will be mutated**
@@ -24,10 +24,10 @@ use super::error::{Result, MdictError};
 /// 
 /// Process:
 /// 1. Determine decryption key (master key or derived from checksum)
-/// 2. Decrypt payload
+/// 2. Decrypt payload in-place
 /// 3. Decompress payload
 /// 4. Verify checksum
-pub fn decode_block(
+pub fn decode_payload(
     raw_block: &mut [u8],
     expected_decompressed_size: u64,
     master_key: Option<&[u8; 16]>,
