@@ -75,33 +75,26 @@ fn main() {
             
             println!("\nSample Entries & Definitions (first {} of {}):", sample_count, total_entries);
             
-            for (i, entry_result) in reader.iter_entries().take(sample_count).enumerate() {
+            let definitions_iterator = reader.iter_keys()
+                .with_record_info()
+                .with_definitions();
+
+            for (i, entry_result) in definitions_iterator.take(sample_count).enumerate() {
                 match entry_result {
-                    Ok((key, location)) => {
+                    Ok((key, definition)) => {
                         println!("  {:2}. Key: {}", i + 1, key);
-
-                        // Now, read the record for this key
-                        match reader.read_record(&location) {
-                            Ok(record_bytes) => {
-                                let definition = reader.decode_record_text(&record_bytes);
-                                
-                                // Truncate for clean display
-                                let mut truncated_def = definition
-                                    .trim()
-                                    .replace('\n', " ")
-                                    .replace('\r', "");
-                                let max_len = 1000;
-                                if truncated_def.chars().count() > max_len {
-                                    truncated_def = truncated_def.chars().take(max_len).collect::<String>() + "...";
-                                }
-
-                                println!("     Def: {}", truncated_def);
-                            }
-                            Err(e) => {
-                                // Handle error reading just this one record
-                                println!("     Def: <Error reading record: {}>", e);
-                            }
+                        
+                        // Truncate for clean display
+                        let mut truncated_def = definition
+                            .trim()
+                            .replace('\n', " ")
+                            .replace('\r', "");
+                        let max_len = 1000;
+                        if truncated_def.chars().count() > max_len {
+                            truncated_def = truncated_def.chars().take(max_len).collect::<String>() + "...";
                         }
+
+                        println!("     Def: {}", truncated_def);
                     }
                     Err(e) => {
                         eprintln!("  Error fetching entry {}: {}", i + 1, e);

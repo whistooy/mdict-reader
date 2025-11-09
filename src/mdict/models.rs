@@ -32,15 +32,8 @@ pub struct MdictHeader {
 /// Information needed to locate and extract a specific record
 #[derive(Debug, Clone)]
 pub struct RecordInfo {
-    /// File position where the compressed block starts
-    pub block_file_offset: u64,
-    /// Size of the compressed block in the file
-    pub block_compressed_size: u64,
-    /// Size after decompression
-    pub block_decompressed_size: u64,
-    /// Offset within the decompressed block where this record starts
+    pub block_meta: BlockMeta,
     pub offset_in_block: u64,
-    /// Size of this specific record
     pub size: u64,
 }
 
@@ -72,7 +65,7 @@ pub struct RecordBlockInfo {
 }
 
 /// Metadata for a single record block.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BlockMeta {
     pub compressed_size: u64,
     pub decompressed_size: u64,
