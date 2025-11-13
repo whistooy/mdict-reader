@@ -32,7 +32,7 @@ pub struct MdictHeader {
 /// Information needed to locate and extract a specific record
 #[derive(Debug, Clone)]
 pub struct RecordInfo {
-    pub block_meta: BlockMeta,
+    pub block_index: usize,
     pub offset_in_block: u64,
     pub size: u64,
 }

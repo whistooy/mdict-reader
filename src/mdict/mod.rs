@@ -120,8 +120,8 @@ impl MdictReader {
     /// records sequentially, prefer `iter_keys().with_record_info().with_definitions()`
     /// for significantly better performance due to internal caching.
     pub fn read_record_text(&self, record_info: &RecordInfo) -> Result<String> {
-        let decoded_block = self.read_record_block(&record_info.block_meta)?;
-        self.parse_record_text(&decoded_block, record_info)
+        let block_bytes = self.read_record_block(record_info.block_index)?;
+        self.parse_record_text(&block_bytes, record_info)
     }
     
     /// Decode record bytes to string using the dictionary's encoding
@@ -130,9 +130,11 @@ impl MdictReader {
         text.into_owned()
     }
 
-    /// Reads and decodes a full record block from the file given its metadata.
-    /// Now receives BlockMeta directly, making it more self-contained.
-    pub fn read_record_block(&self, block_meta: &BlockMeta) -> Result<Vec<u8>> {
+    /// Reads and decodes a full record block from the file given its block index.
+    pub fn read_record_block(&self, block_index: usize) -> Result<Vec<u8>> {
+        let block_meta = self.record_blocks
+            .get(block_index)
+            .ok_or_else(|| MdictError::InvalidFormat(format!("Invalid block index: {}", block_index)))?;
         let mut file = File::open(&self.file_path)?;
         blocks::decode_block(&mut file, block_meta, &self.header)
     }
@@ -220,7 +222,7 @@ impl<'a> RecordInfoIterator<'a> {
         DefinitionsIterator {
             reader: self.reader,
             record_info_iter: self,
-            cached_block_offset: None,
+            cached_block_index: None,
             cached_block_bytes: Vec::new(),
         }
     }
@@ -256,7 +258,7 @@ impl<'a> Iterator for RecordInfoIterator<'a> {
         };
         
         let record_info = RecordInfo {
-            block_meta: *block,
+            block_index: self.record_block_idx,
             offset_in_block: entry_id - self.cumulative_offset,
             size: next_id - entry_id,
         };
@@ -273,7 +275,7 @@ impl<'a> Iterator for RecordInfoIterator<'a> {
 pub struct DefinitionsIterator<'a> {
     record_info_iter: RecordInfoIterator<'a>,
     reader: &'a MdictReader,
-    cached_block_offset: Option<u64>,
+    cached_block_index: Option<usize>,
     cached_block_bytes: Vec<u8>,
 }
 
@@ -285,14 +287,13 @@ impl<'a> Iterator for DefinitionsIterator<'a> {
             Ok(pair) => pair,
             Err(e) => return Some(Err(e)),
         };
-        
-        if self.cached_block_offset != Some(record_info.block_meta.file_offset) {
-            let block_idx = self.record_info_iter.record_block_idx;
-            let block_meta = &self.reader.record_blocks[block_idx];
-            match self.reader.read_record_block(block_meta) {
+        // Check if we need to decode a new record block (compare indices)
+        if self.cached_block_index != Some(record_info.block_index) {
+            // Use the new public method for consistency (could be cached externally too)
+            match self.reader.read_record_block(record_info.block_index) {
                 Ok(bytes) => {
                     self.cached_block_bytes = bytes;
-                    self.cached_block_offset = Some(record_info.block_meta.file_offset);
+                    self.cached_block_index = Some(record_info.block_index);
                 }
                 Err(e) => return Some(Err(e)),
             }
