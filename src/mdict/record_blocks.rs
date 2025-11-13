@@ -1,6 +1,5 @@
 //! Record block parsing (actual dictionary content)
 
-use std::fs::File;
 use std::io::{Read, Seek};
 use log::{debug, info};
 use super::models::{MdictHeader, KeyBlockInfo, RecordBlockInfo, BlockMeta};
@@ -16,8 +15,8 @@ use super::error::{Result, MdictError};
 /// - Record blocks total length
 /// 
 /// Not encrypted, no checksum.
-pub fn parse_info(
-    file: &mut File,
+pub fn parse_info<R: Read>(
+    file: &mut R,
     header: &MdictHeader,
     key_info: &KeyBlockInfo,
 ) -> Result<RecordBlockInfo> {
@@ -54,8 +53,8 @@ pub fn parse_info(
 /// 
 /// Simple list of (compressed_size, decompressed_size) pairs.
 /// No compression or encryption.
-pub fn parse_index(
-    file: &mut File,
+pub fn parse_index<R: Seek + Read>(
+    file: &mut R,
     info: &RecordBlockInfo,
     header: &MdictHeader,
 ) -> Result<Vec<BlockMeta>> {

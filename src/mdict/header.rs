@@ -1,7 +1,6 @@
 //! MDict header parsing and master key derivation
 
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::Read;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use encoding_rs::{Encoding, UTF_16LE};
@@ -21,7 +20,10 @@ use super::error::{Result, MdictError};
 /// - 4 bytes: Adler32 checksum (little-endian)
 /// 
 /// If the file is encrypted and a passcode is configured, derives the master key.
-pub fn parse(file: &mut File, passcode: Option<(&str, &str)>) -> Result<MdictHeader> {
+pub fn parse<R: Read>(
+    file: &mut R,
+    passcode: Option<(&str, &str)>
+) -> Result<MdictHeader> {
     info!("Parsing MDict header");
 
     // Read header length

@@ -1,6 +1,5 @@
 //! Key block parsing (index and blocks containing key entries)
 
-use std::fs::File;
 use std::io::{Read, Seek};
 use byteorder::{BigEndian, LittleEndian, ByteOrder, ReadBytesExt};
 use adler32::adler32;
@@ -27,7 +26,10 @@ use super::error::{Result, MdictError};
 /// - (no checksum)
 /// 
 /// If encrypted, entire block is Salsa20-encrypted.
-pub fn parse_info(file: &mut File, header: &MdictHeader) -> Result<KeyBlockInfo> {
+pub fn parse_info<R: Read>(
+    file: &mut R,
+    header: &MdictHeader
+) -> Result<KeyBlockInfo> {
     info!("Parsing key block info section");
 
     let info_size = match header.version {
@@ -158,8 +160,8 @@ fn decompress_index(
 /// - Last key text (length-prefixed string)
 /// - Compressed size
 /// - Decompressed size
-pub fn parse_index(
-    file: &mut File,
+pub fn parse_index<R: Seek + Read>(
+    file: &mut R,
     info: &KeyBlockInfo,
     header: &MdictHeader,
 ) -> Result<Vec<BlockMeta>> {
@@ -211,8 +213,8 @@ pub fn parse_index(
 }
 
 /// Decode a specific key block and parse its entries.
-pub fn decode_and_parse_block(
-    file: &mut File,
+pub fn decode_and_parse_block<R: Seek + Read>(
+    file: &mut R,
     block_meta: &BlockMeta,
     header: &MdictHeader,
 ) -> Result<Vec<KeyEntry>> {
