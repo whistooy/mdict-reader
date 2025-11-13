@@ -64,7 +64,7 @@ pub struct RecordBlockInfo {
     pub record_blocks_len: u64,
 }
 
-/// Metadata for a single record block.
+/// Metadata for a single data block.
 #[derive(Debug, Clone, Copy)]
 pub struct BlockMeta {
     pub compressed_size: u64,
