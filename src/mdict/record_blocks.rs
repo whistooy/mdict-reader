@@ -63,9 +63,10 @@ pub fn parse_index<R: Seek + Read>(
     let mut index_data = vec![0u8; info.record_index_len as usize];
     file.read_exact(&mut index_data)?;
 
-    let mut blocks = Vec::new();
+    let mut blocks = Vec::with_capacity(info.num_record_blocks as usize);
     let mut reader = index_data.as_slice();
     let mut file_offset = file.stream_position()?;
+    let mut decompressed_offset: u64 = 0;
 
     while !reader.is_empty() {
         let compressed_size = utils::read_number(&mut reader, header.version.number_width())?;
@@ -74,8 +75,10 @@ pub fn parse_index<R: Seek + Read>(
             compressed_size,
             decompressed_size,
             file_offset,
+            decompressed_offset
         });
         file_offset += compressed_size;
+        decompressed_offset += decompressed_size;
     }
 
     // Verify block count

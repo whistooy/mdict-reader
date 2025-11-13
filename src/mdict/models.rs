@@ -67,9 +67,15 @@ pub struct RecordBlockInfo {
 /// Metadata for a single data block.
 #[derive(Debug, Clone, Copy)]
 pub struct BlockMeta {
+    /// Size of the compressed data for this block (in bytes).
     pub compressed_size: u64,
+    /// Size of the decompressed data for this block (in bytes).
     pub decompressed_size: u64,
+    /// Starting offset of this block's compressed data in the file.
     pub file_offset: u64,
+    /// Starting offset of this block in the virtual concatenated decompressed stream.
+    /// (0 for the first block; used for random access via binary search on record_id.)
+    pub decompressed_offset: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

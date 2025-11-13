@@ -32,6 +32,9 @@ pub struct MdictReader {
     
     key_blocks: Vec<BlockMeta>,
     record_blocks: Vec<BlockMeta>,
+    /// Total size of the virtual decompressed record stream (sum of all record block decompressed sizes).
+    /// Used for exact sizing of the last record.
+    pub total_record_decomp_size: u64,
 }
 
 impl MdictReader {
@@ -86,6 +89,9 @@ impl MdictReader {
             &mdict_header
         )?;
 
+        // Precompute total decompressed size for exact last-record sizing
+        let total_record_decomp_size: u64 = record_blocks.iter().map(|b| b.decompressed_size).sum();
+
         info!("MDict file opened: {} entries, {} key blocks, {} record blocks", 
               key_block_info.num_entries, key_blocks.len(), record_blocks.len());
 
@@ -96,6 +102,7 @@ impl MdictReader {
             record_block_info,
             key_blocks,
             record_blocks,
+            total_record_decomp_size,
         })
     }
     
@@ -112,6 +119,33 @@ impl MdictReader {
             key_block_idx: 0,
             current_keys: Vec::new().into_iter(),
         }
+    }
+
+    /// Finds the record metadata for a given record ID (random access).
+    ///
+    /// Performs a binary search on the record blocks to locate the containing block.
+    /// Returns an index-based `RecordInfo` for efficient storage.
+    pub fn get_record_info(&self, id: u64, next_id: u64) -> Result<RecordInfo> {
+        if self.record_blocks.is_empty() {
+            return Err(MdictError::InvalidFormat("No record blocks available".to_string()));
+        }
+        // Binary search: find first block where decompressed_offset > id, then take prev.
+        let block_index = self.record_blocks
+            .partition_point(|block| block.decompressed_offset <= id) - 1;
+        let block_meta = self.record_blocks.get(block_index).ok_or_else(|| {
+            MdictError::InvalidFormat(format!("Record ID {} is out of bounds", id))
+        })?;
+        // Out-of-bounds if beyond this block
+        if id >= block_meta.decompressed_offset + block_meta.decompressed_size {
+            return Err(MdictError::InvalidFormat(format!("Record ID {} exceeds block bounds", id)));
+        }
+        let offset_in_block = id - block_meta.decompressed_offset;
+        let size = next_id - id;
+        Ok(RecordInfo {
+            block_index,
+            offset_in_block,
+            size,
+        })
     }
     
     /// Reads and returns the decoded definition string for a single record.

@@ -173,10 +173,11 @@ pub fn parse_index<R: Seek + Read>(
     let index_data = decompress_index(compressed.as_slice(), info, header)?;
     
     info!("Extracting block boundaries from key index");
-    let mut blocks = Vec::new();
+    let mut blocks = Vec::with_capacity(info.num_key_blocks as usize);
     let mut reader = index_data.as_slice();
     let mut total_entries = 0u64;
     let mut file_offset = file.stream_position()?;
+    let mut decompressed_offset: u64 = 0;
 
     while !reader.is_empty() {
         // Number of entries in this block
@@ -195,11 +196,22 @@ pub fn parse_index<R: Seek + Read>(
             compressed_size,
             decompressed_size,
             file_offset,
+            decompressed_offset
         });
         file_offset += compressed_size;
+        decompressed_offset += decompressed_size;
     }
 
-    // Verify total entry count matches
+    // Verify block count
+    if blocks.len() as u64 != info.num_key_blocks {
+        return Err(MdictError::CountMismatch {
+            item_type: "key blocks in index",
+            expected: info.num_key_blocks,
+            found: blocks.len() as u64,
+        });
+    }
+
+    // Verify total entry count
     if total_entries != info.num_entries {
         return Err(MdictError::CountMismatch {
             item_type: "key entries in index",
