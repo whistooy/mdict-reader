@@ -285,24 +285,26 @@ fn read_null_terminated_string(
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<String> {
     let width = utils::unit_width(encoding);
-    
-    // Find null terminator
     let end_pos = if width == 2 {
+        // Find the index of the null terminator chunk...
         reader
-            .windows(2)
-            .position(|w| w == [0, 0])
+            .chunks_exact(2)
+            .position(|chunk| chunk == [0, 0])
+            // ...then map that chunk index to the final byte position.
+            .map(|chunk_index| chunk_index * 2)
     } else {
+        // Find the position of the null terminator byte directly.
         reader
             .iter()
-            .position(|&b| b == 0)
+            .position(|&byte| byte == 0)
     }
     .ok_or_else(|| MdictError::InvalidFormat("Missing null terminator in string".to_string()))?;
     
-    // Decode text
+    // Decode text from the bytes before the terminator
     let text_bytes = &reader[..end_pos];
     let (decoded, _, _) = encoding.decode(text_bytes);
     
-    // Advance reader past text and terminator
+    // Advance reader past the text AND the terminator
     *reader = &reader[end_pos + width..];
     
     Ok(decoded.into_owned())
