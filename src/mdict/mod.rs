@@ -42,18 +42,30 @@ pub struct MdictReader<T: FileType> {
 
 impl<T: FileType> MdictReader<T> {
     /// Read an MDict file from the given path.
-    /// 
+    ///
+    /// Priority for determining text encoding (highest → lowest):
+    /// 1. FileType::ENCODING_OVERRIDE (hard override for a given file type — e.g., MDD forces UTF-16LE)
+    /// 2. `user_encoding` (explicit override provided by caller/CLI)
+    /// 3. Encoding declared in the dictionary header
+    ///
+    /// **Note:** `user_encoding` has no effect on MDD files, which always use UTF-16LE per the MDict specification.
+    ///
     /// # Arguments
     /// * `path` - File path to the .mdx or .mdd file
     /// * `passcode` - Optional (`regcode_hex`, `user_email`) tuple for encrypted files
-    /// 
+    /// * `user_encoding` - Optional explicit encoding override (only applies to MDX; ignored for MDD)
+    ///
     /// # Errors
     /// Returns an error if:
     /// - File cannot be opened
     /// - File format is invalid or corrupted
     /// - Unsupported version (3.0+)
     /// - Checksum verification fails
-    pub fn new(path: impl AsRef<Path>, passcode: Option<(&str, &str)>) -> Result<Self> {
+    pub fn new(
+        path: impl AsRef<Path>,
+        passcode: Option<(&str, &str)>,
+        user_encoding: Option<&str>,
+    ) -> Result<Self> {
         let path = path.as_ref();
         info!("Opening MDict file: {}", path.display());
         let mut file = File::open(path)?;
@@ -61,11 +73,12 @@ impl<T: FileType> MdictReader<T> {
         // Parse header (includes master key derivation if encrypted)
         let mut mdict_header = header::parse(&mut file, passcode)?;
 
-        // Determine the final, operational encoding
+        // Determine the final, operational encoding (priority: ENCODING_OVERRIDE > user > header)
         let final_encoding = T::ENCODING_OVERRIDE
+            .or_else(|| user_encoding.map(utils::parse_encoding))
             .unwrap_or(mdict_header.encoding);
         if mdict_header.encoding != final_encoding {
-             info!(
+            info!(
                 "Text encoding overridden: header='{}', final='{}'",
                 mdict_header.encoding.name(),
                 final_encoding.name()

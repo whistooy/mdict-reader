@@ -42,13 +42,27 @@ pub fn read_small_number(reader: &mut impl Read, number_width: usize) -> Result<
 /// In MDict format:
 /// - UTF-16 encodings use 2-byte code units.
 /// - All other supported encodings use 1-byte code units.
-///
-/// This is used, for example, when reading null-terminated strings or
-/// calculating text lengths.
 pub fn unit_width(encoding: &'static Encoding) -> usize {
     if encoding == UTF_16LE || encoding == UTF_16BE {
         2
     } else {
         1
     }
+}
+
+/// Parse and normalize an encoding label string.
+///
+/// - Normalizes GBK/GB2312 → GB18030 (broader compatibility)
+/// - Returns UTF-8 as fallback if label is unknown
+pub fn parse_encoding(label: &str) -> &'static Encoding {
+    let trimmed = label.trim();
+
+    let normalized_label = if trimmed.eq_ignore_ascii_case("GBK") || trimmed.eq_ignore_ascii_case("GB2312") {
+        "GB18030"
+    } else {
+        trimmed
+    };
+
+    Encoding::for_label(normalized_label.as_bytes())
+        .unwrap_or(encoding_rs::UTF_8)
 }

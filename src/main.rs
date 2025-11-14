@@ -66,10 +66,10 @@ fn main() {
     }
 
     let file_path = &args[1];
+
+    // Parse optional --passcode argument
     let mut passcode: Option<(&str, &str)> = None;
     let mut passcode_storage: Option<(String, String)> = None;
-
-    // Parse --passcode argument
     if let Some(passcode_idx) = args.iter().position(|arg| arg == "--passcode") {
         if let Some(passcode_str) = args.get(passcode_idx + 1) {
             if let Some((reg_code, email)) = passcode_str.split_once(',') {
@@ -84,9 +84,19 @@ fn main() {
             std::process::exit(1);
         }
     }
-
     if let Some((ref reg_code, ref email)) = passcode_storage {
         passcode = Some((reg_code, email));
+    }
+
+    // Parse optional --encoding argument (user override)
+    let mut user_encoding: Option<&str> = None;
+    if let Some(enc_idx) = args.iter().position(|arg| arg == "--encoding") {
+        if let Some(enc_label) = args.get(enc_idx + 1) {
+            user_encoding = Some(enc_label.as_str());
+        } else {
+            eprintln!("ERROR: --encoding flag requires an argument.");
+            std::process::exit(1);
+        }
     }
 
     println!("\n{}", "=".repeat(60));
@@ -99,7 +109,7 @@ fn main() {
     println!("{}", "=".repeat(60));
 
     // Use the high-level Mdict::open for auto-detection
-    match Mdict::open(file_path, passcode) {
+    match Mdict::open(file_path, passcode, user_encoding) {
         Ok(mdict) => {
             match mdict {
                 Mdict::Mdx(reader) => {

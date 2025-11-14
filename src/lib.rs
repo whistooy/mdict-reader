@@ -76,19 +76,30 @@ impl Mdict {
     /// Opens an MDict file, automatically detecting its type from the file
     /// extension and returning the appropriate specialized reader.
     ///
+    /// # Encoding Override Behavior
+    /// - For **MDX files**: `user_encoding` overrides the header's declared encoding.
+    /// - For **MDD files**: `user_encoding` is **ignored**; MDD always uses UTF-16LE per specification.
+    ///
     /// For direct, type-safe access, use `MdictReader::<Mdx>::new()` or
     /// `MdictReader::<Mdd>::new()` instead.
-    pub fn open(path: impl AsRef<Path>, passcode: Option<(&str, &str)>) -> Result<Self> {
+    ///
+    /// # Arguments
+    /// * `path` - File path to the .mdx or .mdd file
+    /// * `passcode` - Optional (`regcode_hex`, `user_email`) tuple for encrypted files
+    /// * `user_encoding` - Optional encoding override (only effective for MDX files)
+    pub fn open(
+        path: impl AsRef<Path>,
+        passcode: Option<(&str, &str)>,
+        user_encoding: Option<&str>,
+    ) -> Result<Self> {
         let path = path.as_ref();
 
         match path.extension().and_then(|s| s.to_str()) {
             Some(ext) if ext.eq_ignore_ascii_case("mdx") => {
-                // Now calls the public constructor
-                Ok(Mdict::Mdx(MdictReader::<Mdx>::new(path, passcode)?))
+                Ok(Mdict::Mdx(MdictReader::<Mdx>::new(path, passcode, user_encoding)?))
             }
             Some(ext) if ext.eq_ignore_ascii_case("mdd") => {
-                // Now calls the public constructor
-                Ok(Mdict::Mdd(MdictReader::<Mdd>::new(path, passcode)?))
+                Ok(Mdict::Mdd(MdictReader::<Mdd>::new(path, passcode, user_encoding)?))
             }
             _ => Err(MdictError::InvalidFormat(
                 "File must have a .mdx or .mdd extension for auto-detection".to_string(),

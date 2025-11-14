@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 use std::io::Read;
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
-use encoding_rs::{Encoding, UTF_16LE};
+use encoding_rs::UTF_16LE;
 use quick_xml::{events::Event, Reader};
 use adler32::adler32;
 use hex;
 use log::{debug, info, trace};
 use super::models::{MdictHeader, MdictVersion, EncryptionFlags};
-use super::crypto;
+use super::{utils, crypto};
 use super::error::{Result, MdictError};
 
 /// Parse the MDict file header.
@@ -120,11 +120,10 @@ fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<Mdict
     let version_enum = MdictVersion::try_from(version_f32)?;
     debug!("MDict version: {} (parsed as {:?})", version_str, version_enum);
 
-    // Parse encoding (normalize GBK/GB2312 to GB18030)
+    // Parse encoding from header
     let encoding = attrs
         .get("Encoding")
-        .map(|s| if s == "GBK" || s == "GB2312" { "GB18030" } else { s.as_str() })
-        .and_then(|label| Encoding::for_label(label.as_bytes()))
+        .map(|s| utils::parse_encoding(s.as_str()))
         .unwrap_or(encoding_rs::UTF_8);
     debug!("Text encoding: {}", encoding.name());
 
