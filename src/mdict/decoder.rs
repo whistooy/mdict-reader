@@ -3,6 +3,7 @@
 use byteorder::{BigEndian, LittleEndian, ByteOrder};
 use adler32::adler32;
 use ripemd::{Digest, Ripemd128};
+use std::cmp::min;
 use log::trace;
 use super::{crypto, compression};
 use super::models::{CompressionType, EncryptionType};
@@ -40,6 +41,7 @@ pub fn decode_payload(
     let info = LittleEndian::read_u32(&raw_block[0..4]);
     let compression_type = CompressionType::try_from((info & 0xF) as u8)?;
     let encryption_type = EncryptionType::try_from(((info >> 4) & 0xF) as u8)?;
+    let encryption_size = ((info >> 8) & 0xFF) as usize;
     let checksum_expected = BigEndian::read_u32(&raw_block[4..8]);
 
     trace!(
@@ -63,10 +65,17 @@ pub fn decode_payload(
     };
 
     let payload = &mut raw_block[8..];
-    // Step 1: Decrypt
-    crypto::decrypt_payload_in_place(payload, encryption_type, &decryption_key);
 
-    // Step 2: Decompress
+    // Step 1: Decrypt (with size limit)
+    // Ensure we don't try to decrypt more data than exists.
+    let decrypt_len = min(encryption_size, payload.len());
+    crypto::decrypt_payload_in_place(
+        &mut payload[..decrypt_len],
+        encryption_type,
+        &decryption_key,
+    );
+
+    // Step 2: Decompress (uses the full payload)
     let decompressed = compression::decompress_payload(
         payload,
         compression_type,
