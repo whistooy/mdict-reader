@@ -2,6 +2,7 @@
 
 pub mod models;
 pub mod error;
+pub mod filetypes;
 mod header;
 mod blocks;
 mod key_blocks;
@@ -13,18 +14,21 @@ mod utils;
 
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::iter::Peekable;
 use std::vec::IntoIter;
 use log::info;
 use models::*;
+use filetypes::FileType;
 pub use error::{MdictError, Result};
 
 /// The main reader for MDict dictionary files.
 /// 
 /// Parses both .mdx (dictionary) and .mdd (data) files.
 /// Supports MDict format versions 1.x and 2.x.
-pub struct MdictReader {
+#[derive(Debug)]
+pub struct MdictReader<T: FileType> {
     file_path: PathBuf,
     pub header: MdictHeader,
     pub key_block_info: KeyBlockInfo,
@@ -32,12 +36,11 @@ pub struct MdictReader {
     
     key_blocks: Vec<BlockMeta>,
     record_blocks: Vec<BlockMeta>,
-    /// Total size of the virtual decompressed record stream (sum of all record block decompressed sizes).
-    /// Used for exact sizing of the last record.
     pub total_record_decomp_size: u64,
+    _file_type: PhantomData<T>,
 }
 
-impl MdictReader {
+impl<T: FileType> MdictReader<T> {
     /// Read an MDict file from the given path.
     /// 
     /// # Arguments
@@ -56,7 +59,19 @@ impl MdictReader {
         let mut file = File::open(path)?;
 
         // Parse header (includes master key derivation if encrypted)
-        let mdict_header = header::parse(&mut file, passcode)?;
+        let mut mdict_header = header::parse(&mut file, passcode)?;
+
+        // Determine the final, operational encoding
+        let final_encoding = T::ENCODING_OVERRIDE
+            .unwrap_or(mdict_header.encoding);
+        if mdict_header.encoding != final_encoding {
+             info!(
+                "Text encoding overridden: header='{}', final='{}'",
+                mdict_header.encoding.name(),
+                final_encoding.name()
+            );
+        }
+        mdict_header.encoding = final_encoding;
     
         // Parse key block metadata
         let key_block_info = key_blocks::parse_info(
@@ -103,6 +118,7 @@ impl MdictReader {
             key_blocks,
             record_blocks,
             total_record_decomp_size,
+            _file_type: PhantomData,
         })
     }
     
@@ -111,9 +127,9 @@ impl MdictReader {
     /// This is the most primitive and fastest way to scan all keys. It only
     /// decodes key blocks and does not touch record blocks.
     ///
-    /// Chain this with `.with_record_info()` and `.with_definitions()`
+    /// Chain this with `.with_record_info()` and `.with_records()`
     /// for more complete data.
-    pub fn iter_keys(&self) -> KeysIterator<'_> {
+    pub fn iter_keys(&self) -> KeysIterator<'_, T> {
         KeysIterator {
             reader: self,
             key_block_idx: 0,
@@ -148,43 +164,51 @@ impl MdictReader {
         })
     }
     
-    /// Reads and returns the decoded definition string for a single record.
+    /// Reads, decodes, and processes a single record into its final type.
     ///
-    /// This method is a convenience for random lookups. For iterating over many
-    /// records sequentially, prefer `iter_keys().with_record_info().with_definitions()`
-    /// for significantly better performance due to internal caching.
-    pub fn read_record_text(&self, record_info: &RecordInfo) -> Result<String> {
+    /// This is the primary method for random-access lookups.
+    /// - For `MdictReader<Mdx>`, this returns `Result<String>`.
+    /// - For `MdictReader<Mdd>`, this returns `Result<Vec<u8>>`.
+    ///
+    /// It performs a file read to get the necessary block, so it's best to
+    /// use iterators for sequential access.
+    pub fn read_record(&self, record_info: &RecordInfo) -> Result<T::Record> {
         let block_bytes = self.read_record_block(record_info.block_index)?;
-        self.parse_record_text(&block_bytes, record_info)
-    }
-    
-    /// Decode record bytes to string using the dictionary's encoding
-    pub fn decode_record_text(&self, record_bytes: &[u8]) -> String {
-        let (text, _, _) = self.header.encoding.decode(record_bytes);
-        text.into_owned()
+        self.parse_record(&block_bytes, record_info)
     }
 
+    /// Extracts and processes a record from a pre-loaded block's byte slice.
+    ///
+    /// This is a lower-level version of `read_record` that operates on data
+    /// already in memory. The `RecordIterator` uses this internally to
+    /// avoid re-reading the same block for multiple entries.
+    pub fn parse_record(&self, block_bytes: &[u8], info: &RecordInfo) -> Result<T::Record> {
+        let start = info.offset_in_block as usize;
+        let end = start + info.size as usize;
+        if end > block_bytes.len() {
+            return Err(MdictError::InvalidFormat(format!(
+                "Record location [{}..{}] is out of bounds for block of size {}",
+                start, end, block_bytes.len()
+            )));
+        }
+        
+        // Extract the raw bytes for this specific record
+        let record_slice = &block_bytes[start..end];
+        
+        // Delegate to the file-type specific processing logic
+        T::process_record(record_slice, &self.header)
+    }
+    
     /// Reads and decodes a full record block from the file given its block index.
+    ///
+    /// This method is kept public for applications that wish to implement their
+    /// own record caching strategies on top of the raw blocks.
     pub fn read_record_block(&self, block_index: usize) -> Result<Vec<u8>> {
         let block_meta = self.record_blocks
             .get(block_index)
             .ok_or_else(|| MdictError::InvalidFormat(format!("Invalid block index: {}", block_index)))?;
         let mut file = File::open(&self.file_path)?;
         blocks::decode_block(&mut file, block_meta, &self.header)
-    }
-
-    /// Parses a record from a decoded block and decodes it to a String.
-    pub fn parse_record_text(&self, block_bytes: &[u8], info: &RecordInfo) -> Result<String> {
-        let start = info.offset_in_block as usize;
-        let end = start + info.size as usize;
-        if end > block_bytes.len() {
-            return Err(MdictError::InvalidFormat(format!(
-                "Record location [{}..{}] out of bounds for block of size {}",
-                start, end, block_bytes.len()
-            )));
-        }
-        let record_slice = &block_bytes[start..end];
-        Ok(self.decode_record_text(record_slice))
     }
 }
 
@@ -193,16 +217,16 @@ impl MdictReader {
 /// An iterator over `(key_text, record_id)` pairs.
 ///
 /// Created by [`MdictReader::iter_keys()`].
-pub struct KeysIterator<'a> {
-    reader: &'a MdictReader,
+pub struct KeysIterator<'a, T: FileType> {
+    reader: &'a MdictReader<T>,
     key_block_idx: usize,
     current_keys: IntoIter<KeyEntry>,
 }
 
-impl<'a> KeysIterator<'a> {
+impl<'a, T: FileType> KeysIterator<'a, T> {
     /// Consumes the keys iterator and returns a new iterator that yields
     /// `(key_text, RecordInfo)` pairs.
-    pub fn with_record_info(self) -> RecordInfoIterator<'a> {
+    pub fn with_record_info(self) -> RecordInfoIterator<'a, T> {
         RecordInfoIterator {
             reader: self.reader, 
             keys_iter: self.peekable(),
@@ -212,7 +236,7 @@ impl<'a> KeysIterator<'a> {
     }
 }
 
-impl<'a> Iterator for KeysIterator<'a> {
+impl<'a, T: FileType> Iterator for KeysIterator<'a, T> {
     type Item = Result<(String, u64)>;
     
     fn next(&mut self) -> Option<Self::Item> {
@@ -242,18 +266,18 @@ impl<'a> Iterator for KeysIterator<'a> {
 /// An iterator over `(key_text, RecordInfo)` pairs.
 ///
 /// Created by calling `.with_record_info()` on a [`KeysIterator`].
-pub struct RecordInfoIterator<'a> {
-    keys_iter: Peekable<KeysIterator<'a>>,
-    reader: &'a MdictReader,
+pub struct RecordInfoIterator<'a, T: FileType> {
+    keys_iter: Peekable<KeysIterator<'a, T>>,
+    reader: &'a MdictReader<T>,
     record_block_idx: usize,
     cumulative_offset: u64,
 }
 
-impl<'a> RecordInfoIterator<'a> {
+impl<'a, T: FileType> RecordInfoIterator<'a, T> {
     /// Consumes this iterator and returns a new one that yields the full
     /// `(key_text, definition_string)` pair for each entry.
-    pub fn with_definitions(self) -> DefinitionsIterator<'a> {
-        DefinitionsIterator {
+    pub fn with_records(self) -> RecordIterator<'a, T> {
+        RecordIterator {
             reader: self.reader,
             record_info_iter: self,
             cached_block_index: None,
@@ -262,7 +286,7 @@ impl<'a> RecordInfoIterator<'a> {
     }
 }
 
-impl<'a> Iterator for RecordInfoIterator<'a> {
+impl<'a, T: FileType> Iterator for RecordInfoIterator<'a, T> {
     type Item = Result<(String, RecordInfo)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -304,17 +328,17 @@ impl<'a> Iterator for RecordInfoIterator<'a> {
 /// An iterator over `(key, definition)` string pairs.
 ///
 /// This iterator is stateful and performs internal caching to efficiently
-/// read the dictionary sequentially. Created by calling `.with_definitions()`
+/// read the dictionary sequentially. Created by calling `.with_records()`
 /// on a [`RecordInfoIterator`].
-pub struct DefinitionsIterator<'a> {
-    record_info_iter: RecordInfoIterator<'a>,
-    reader: &'a MdictReader,
+pub struct RecordIterator<'a, T: FileType> {
+    record_info_iter: RecordInfoIterator<'a, T>,
+    reader: &'a MdictReader<T>,
     cached_block_index: Option<usize>,
     cached_block_bytes: Vec<u8>,
 }
 
-impl<'a> Iterator for DefinitionsIterator<'a> {
-    type Item = Result<(String, String)>;
+impl<'a, T: FileType> Iterator for RecordIterator<'a, T> {
+    type Item = Result<(String, T::Record)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let (key_text, record_info) = match self.record_info_iter.next()? {
@@ -333,8 +357,8 @@ impl<'a> Iterator for DefinitionsIterator<'a> {
             }
         }
         
-        match self.reader.parse_record_text(&self.cached_block_bytes, &record_info) {
-            Ok(definition) => Some(Ok((key_text, definition))),
+        match self.reader.parse_record(&self.cached_block_bytes, &record_info) {
+            Ok(record) => Some(Ok((key_text, record))),
             Err(e) => Some(Err(e)),
         }
     }
