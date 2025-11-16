@@ -6,7 +6,7 @@ use ripemd::{Digest, Ripemd128};
 use std::cmp::min;
 use log::trace;
 use super::{crypto, compression};
-use super::models::{CompressionType, EncryptionType};
+use super::models::{CompressionType, EncryptionType, MdictVersion};
 use super::error::{Result, MdictError};
 
 /// Decode a compressed/encrypted payload.
@@ -17,21 +17,18 @@ use super::error::{Result, MdictError};
 ///   contents should be considered invalid after this function returns.
 /// * `expected_decompressed_size` - The expected final size after decompression.
 /// * `master_key` - The master decryption key, if any.
+/// * `version` - The MDict format version, to determine checksum logic.
 /// 
-/// MDict block format:
-/// - Bytes 0-3: Compression type (lower 4 bits) + Encryption type (next 4 bits)
-/// - Bytes 4-7: Adler32 checksum of decompressed data
-/// - Bytes 8+:  Encrypted/compressed payload
+/// Process (v1/v2):
+/// 1. Decrypt -> 2. Decompress -> 3. Verify checksum on decompressed data
 /// 
-/// Process:
-/// 1. Determine decryption key (master key or derived from checksum)
-/// 2. Decrypt payload in-place
-/// 3. Decompress payload
-/// 4. Verify checksum
+/// Process (v3):
+/// 1. Decrypt -> 2. Verify checksum on decrypted data -> 3. Decompress
 pub fn decode_payload(
     raw_block: &mut [u8],
     expected_decompressed_size: u64,
     master_key: Option<&[u8; 16]>,
+    version: MdictVersion,
 ) -> Result<Vec<u8>> {
     if raw_block.len() < 8 {
         return Err(MdictError::InvalidFormat("Block too short (minimum 8 bytes required)".to_string()));
@@ -74,23 +71,37 @@ pub fn decode_payload(
         encryption_type,
         &decryption_key,
     );
+    // Step 2: Verify checksum (position depends on version)
+    if version == MdictVersion::V3 {
+        // V3 checksums the DECRYPTED data before decompression.
+        let checksum_actual = adler32(&*payload)?;
+        trace!("V3 block checksum on decrypted data: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
+        if checksum_actual != checksum_expected {
+            return Err(MdictError::ChecksumMismatch {
+                expected: checksum_expected,
+                actual: checksum_actual,
+            });
+        }
+    }
 
-    // Step 2: Decompress (uses the full payload)
+    // Step 3: Decompress (uses the full payload, which is now decrypted)
     let decompressed = compression::decompress_payload(
         payload,
         compression_type,
         expected_decompressed_size,
     )?;
 
-    // Step 3: Verify checksum
-    let checksum_actual = adler32(decompressed.as_slice())?;
-    if checksum_actual != checksum_expected {
-        return Err(MdictError::ChecksumMismatch {
-            expected: checksum_expected,
-            actual: checksum_actual,
-        });
+    // Step 4: Verify checksum for v1/v2 (after decompression)
+    if version != MdictVersion::V3 {
+        let checksum_actual = adler32(decompressed.as_slice())?;
+        trace!("V1/V2 block checksum on decrypted data: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
+        if checksum_actual != checksum_expected {
+            return Err(MdictError::ChecksumMismatch {
+                expected: checksum_expected,
+                actual: checksum_actual,
+            });
+        }
     }
-    trace!("Block checksum verified: {:#010x}", checksum_actual);
 
     Ok(decompressed)
 }

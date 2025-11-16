@@ -21,5 +21,6 @@ pub fn decode_block<R: Seek + Read>(
         &mut compressed,
         block_meta.decompressed_size,
         header.master_key.as_ref(),
+        header.version,
     )
 }

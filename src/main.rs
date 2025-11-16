@@ -1,7 +1,5 @@
 use mdict_reader::{Mdict, MdictReader, FileType};
 use std::env;
-use std::cmp::min;
-
 
 /// Helper function to print common metadata from any MdictReader.
 fn print_common_info<T: FileType>(reader: &MdictReader<T>) {
@@ -19,9 +17,9 @@ fn print_common_info<T: FileType>(reader: &MdictReader<T>) {
         println!("  Description: {}", desc);
     }
     println!("\nStatistics:");
-    println!("  Key entries:    {}", reader.key_block_info.num_entries);
-    println!("  Key blocks:     {}", reader.key_block_info.num_key_blocks);
-    println!("  Record blocks:  {}", reader.record_block_info.num_record_blocks);
+    println!("  Key entries:    {}", reader.num_entries());
+    println!("  Key blocks:     {}", reader.num_key_blocks());
+    println!("  Record blocks:  {}", reader.num_record_blocks());
 }
 /// Generic helper to print sample records, handling the iteration and sampling logic.
 /// It takes a closure to define how to print the record-specific details.
@@ -31,25 +29,33 @@ fn print_samples<T: FileType>(
     print_record_details: impl Fn(&T::Record),
 ) {
     let desired_sample_count = 100;
-    let total_entries = reader.key_block_info.num_entries;
-    // Correctly calculate the number of samples to show.
-    let sample_count = min(desired_sample_count, total_entries as usize);
-    println!("\nSample Entries & {} (first {} of {}):", description, sample_count, total_entries);
-    let records_iterator = reader.iter_keys()
+    println!("\nSample Entries & {} (showing first up to {} entries):", description, desired_sample_count);
+    let mut entries_processed = 0;
+    // We collect the first `desired_sample_count` entries.
+    // This is efficient because the iterator is lazy and will stop processing
+    // key blocks once the limit is reached.
+    let samples: Vec<_> = reader.iter_keys()
         .with_record_info()
-        .with_records();
-    for (i, entry_result) in records_iterator.take(sample_count).enumerate() {
+        .with_records()
+        .take(desired_sample_count)
+        .collect();
+    // Now, we print the collected samples.
+    for (i, entry_result) in samples.into_iter().enumerate() {
         match entry_result {
             Ok((key, record)) => {
                 println!("  {:2}. Key: {}", i + 1, key);
-                // Call the provided closure to print the specific details.
                 print_record_details(&record);
             }
             Err(e) => eprintln!("  Error fetching entry {}: {}", i + 1, e),
         }
+        entries_processed += 1;
     }
-    if total_entries > sample_count as u64 {
-        println!("  ... and {} more entries", total_entries - sample_count as u64);
+    
+    let total_entries = reader.num_entries();
+    println!("\nTotal entries in dictionary: {}", total_entries);
+    if total_entries > entries_processed as u64 {
+        let remaining = total_entries - entries_processed as u64;
+        println!("  ({} samples shown above, {} more entries not shown)", entries_processed, remaining);
     }
 }
 

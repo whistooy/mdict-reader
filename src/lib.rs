@@ -1,7 +1,7 @@
 //! # mdict-reader
 //!
 //! A reader for MDict dictionary files (.mdx and .mdd).
-//! Supports versions 1.x and 2.x with encryption and various compression algorithms.
+//! Supports versions 1.x, 2.x and 3.x with encryption and various compression algorithms.
 //!
 //! ## Usage
 //!
@@ -51,8 +51,6 @@ pub use mdict::{
         MdictHeader,
         EncryptionFlags,
         KeyEntry,
-        KeyBlockInfo,
-        RecordBlockInfo,
         RecordInfo,
     },
     // The error types

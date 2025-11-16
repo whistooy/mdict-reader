@@ -4,7 +4,7 @@ use encoding_rs::Encoding;
 use super::error::{MdictError, Result};
 
 /// Encryption flags from MDict header.
-/// 
+///
 /// Bit 0x01: Record blocks are encrypted
 /// Bit 0x02: Key index is encrypted
 #[derive(Debug, Default)]
@@ -14,7 +14,7 @@ pub struct EncryptionFlags {
 }
 
 /// Parsed MDict file header.
-/// 
+///
 /// Contains version, encoding, encryption settings, and metadata.
 #[derive(Debug)]
 pub struct MdictHeader {
@@ -27,6 +27,7 @@ pub struct MdictHeader {
     pub stylesheet: Option<String>,
     /// Master decryption key (derived from passcode if encrypted, None otherwise)
     pub master_key: Option<[u8; 16]>,
+    pub uuid: Option<Vec<u8>>, // UUID for v3.0 key derivation
 }
 
 /// Information needed to locate and extract a specific record
@@ -37,31 +38,11 @@ pub struct RecordInfo {
     pub size: u64,
 }
 
-/// Metadata about the key blocks section.
-#[derive(Debug)]
-pub struct KeyBlockInfo {
-    pub num_key_blocks: u64,
-    pub num_entries: u64,
-    /// Only present in v2.0+ (decompressed size of key index)
-    pub key_index_decomp_len: Option<u64>,
-    pub key_index_comp_len: u64,
-    pub key_blocks_len: u64,
-}
-
 /// A dictionary key entry with its record ID.
 #[derive(Debug)]
 pub struct KeyEntry {
     pub id: u64,
     pub text: String,
-}
-
-/// Metadata about the record blocks section.
-#[derive(Debug)]
-pub struct RecordBlockInfo {
-    pub num_record_blocks: u64,
-    pub num_entries: u64,
-    pub record_index_len: u64,
-    pub record_blocks_len: u64,
 }
 
 /// Metadata for a single data block.
@@ -82,6 +63,7 @@ pub struct BlockMeta {
 pub enum MdictVersion {
     V1,
     V2,
+    V3,
 }
 
 impl MdictVersion {
@@ -89,7 +71,7 @@ impl MdictVersion {
     pub fn number_width(&self) -> usize {
         match self {
             MdictVersion::V1 => 4,
-            MdictVersion::V2 => 8,
+            MdictVersion::V2 | MdictVersion::V3 => 8,
         }
     }
 
@@ -97,7 +79,7 @@ impl MdictVersion {
     pub fn small_number_width(&self) -> usize {
         match self {
             MdictVersion::V1 => 1,
-            MdictVersion::V2 => 2,
+            MdictVersion::V2 | MdictVersion::V3 => 2,
         }
     }
 }
@@ -109,8 +91,34 @@ impl TryFrom<f32> for MdictVersion {
             Ok(Self::V1)
         } else if v < 3.0 {
             Ok(Self::V2)
+        } else if v < 4.0 {
+            Ok(Self::V3)
         } else {
             Err(MdictError::UnsupportedVersion(v))
+        }
+    }
+}
+
+/// Block type markers used in MDict v3.0
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockType {
+    RecordData = 0x01000000,
+    RecordIndex = 0x02000000,
+    KeyData = 0x03000000,
+    KeyIndex = 0x04000000,
+}
+
+impl TryFrom<u32> for BlockType {
+    type Error = MdictError;
+    fn try_from(value: u32) -> Result<Self> {
+        match value {
+            0x01000000 => Ok(Self::RecordData),
+            0x02000000 => Ok(Self::RecordIndex),
+            0x03000000 => Ok(Self::KeyData),
+            0x04000000 => Ok(Self::KeyIndex),
+            _ => Err(MdictError::InvalidFormat(
+                format!("Unknown v3 block type: {:#010x}", value)
+            )),
         }
     }
 }

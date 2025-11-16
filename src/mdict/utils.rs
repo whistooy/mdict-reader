@@ -8,7 +8,7 @@ use super::error::Result;
 /// Read a 4 or 8 byte big-endian number.
 /// 
 /// Used throughout MDict format for size and count fields.
-/// Width depends on format version (v1.x uses 4 bytes, v2.x uses 8 bytes).
+/// Width depends on format version (v1.x uses 4 bytes, v2.x/v3.x uses 8 bytes).
 ///
 /// # Panics
 /// Panics if `number_width` is not 4 or 8. This is considered a programmer

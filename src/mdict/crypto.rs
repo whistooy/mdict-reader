@@ -5,6 +5,7 @@ use log::{debug, trace};
 use super::models::EncryptionType;
 use super::error::{Result, MdictError};
 use byteorder::{ByteOrder, LittleEndian};
+use twox_hash::XxHash64;
 
 /// Derive master encryption key from registration code and user ID.
 /// 
@@ -82,6 +83,29 @@ pub fn decrypt_payload_in_place(
             salsa_decrypt(payload, key);
         }
     }
+}
+
+/// Derive 16-byte master key from UUID using xxHash64 (v3.0 only).
+/// 
+/// Algorithm:
+/// 1. Split UUID at midpoint
+/// 2. Hash each half with xxh64 (seed=0)
+/// 3. Concatenate to form 16-byte key
+pub fn derive_key_from_uuid(uuid: &[u8]) -> Result<[u8; 16]> {
+    debug!("Deriving master key from UUID ({} bytes)", uuid.len());
+    
+    let mid = uuid.len().div_ceil(2);
+    let first_half = &uuid[..mid];
+    let second_half = &uuid[mid..];
+    
+    let hash1 = XxHash64::oneshot(0, first_half).to_be_bytes();
+    let hash2 = XxHash64::oneshot(0, second_half).to_be_bytes();
+    
+    let mut key = [0u8; 16];
+    key[..8].copy_from_slice(&hash1);
+    key[8..].copy_from_slice(&hash2);
+    
+    Ok(key)
 }
 
 /// Decrypts data in-place using the Salsa20/8 stream cipher.

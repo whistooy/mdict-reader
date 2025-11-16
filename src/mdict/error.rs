@@ -9,8 +9,8 @@ pub enum MdictError {
     #[error("I/O error: {0:?}")]
     Io(#[from] std::io::Error),
 
-    /// The MDict file version is unsupported (e.g., 3.0+).
-    #[error("Unsupported MDict version: {0}. Only v1.x and v2.x are supported.")]
+    /// The MDict file version is unsupported (e.g., 4.0+).
+    #[error("Unsupported MDict version: {0}. Only v1.x, v2.x, and v3.x are supported.")]
     UnsupportedVersion(f32),
 
     /// A checksum validation failed, indicating data corruption.
