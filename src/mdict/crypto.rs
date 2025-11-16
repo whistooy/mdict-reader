@@ -1,51 +1,31 @@
 //! Cryptographic operations for MDict format
 
 use ripemd::{Digest, Ripemd128};
-use salsa20::{cipher::{KeyIvInit, StreamCipher}, Salsa8};
 use log::{debug, trace};
 use super::models::EncryptionType;
 use super::error::{Result, MdictError};
+use byteorder::{ByteOrder, LittleEndian};
 
 /// Derive master encryption key from registration code and user ID.
 /// 
 /// Algorithm:
-/// 1. Hash user ID with RIPEMD-128 → 16-byte digest
-/// 2. Duplicate digest to form 32-byte Salsa20 key
-/// 3. Decrypt registration code with Salsa20/8
+/// 1. Hash user ID with RIPEMD-128 to get a 16-byte digest.
+/// 2. Use this digest as a 128-bit key for Salsa20/8.
+/// 3. Decrypt the 16-byte registration code to get the final master key.
 pub fn derive_master_key(reg_code: &[u8], user_id: &[u8]) -> Result<[u8; 16]> {
     debug!("Deriving master key from registration code and user ID");
     
-    // Hash user ID to create cipher key
+    // 1. Hash the user ID to create the Salsa20 key.
     let mut hasher = Ripemd128::new();
     hasher.update(user_id);
-    let user_id_digest: [u8; 16] = hasher.finalize().into();
-
-    // Salsa20 requires 32-byte key (duplicate the 16-byte digest)
-    let mut salsa_key = [0u8; 32];
-    salsa_key[..16].copy_from_slice(&user_id_digest);
-    salsa_key[16..].copy_from_slice(&user_id_digest);
-
-    // Decrypt registration code to get final master key
-    let mut key = reg_code.to_vec();
-    let mut cipher = Salsa8::new((&salsa_key).into(), &([0u8; 8]).into());
-    cipher.apply_keystream(&mut key);
-
-    key.try_into()
-        .map_err(|_| MdictError::DecryptionError("Registration code must be exactly 16 bytes".to_string()))
-}
-
-/// Decrypt data using Salsa20/8 stream cipher.
-/// 
-/// The 16-byte key is duplicated to form the required 32-byte key.
-pub fn salsa_decrypt(data: &mut [u8], key16: &[u8; 16]) {
-    trace!("Decrypting {} bytes with Salsa20", data.len());
-    
-    let mut salsa_key = [0u8; 32];
-    salsa_key[..16].copy_from_slice(key16);
-    salsa_key[16..].copy_from_slice(key16);
-
-    let mut cipher = Salsa8::new((&salsa_key).into(), &([0u8; 8]).into());
-    cipher.apply_keystream(data);
+    let salsa_key: [u8; 16] = hasher.finalize().into();
+    // 2. Decrypt the registration code using the generated key.
+    let mut master_key_bytes = reg_code.to_vec();
+    salsa_decrypt(&mut master_key_bytes, &salsa_key);
+    // 3. The decrypted data is the master key.
+    master_key_bytes
+        .try_into()
+        .map_err(|_| MdictError::InvalidFormat("Internal error: derived key was not 16 bytes".to_string()))
 }
 
 /// Fast XOR-based decryption used in MDict format.
@@ -102,4 +82,85 @@ pub fn decrypt_payload_in_place(
             salsa_decrypt(payload, key);
         }
     }
+}
+
+/// Decrypts data in-place using the Salsa20/8 stream cipher.
+///
+/// **Note: This implementation only supports 16-byte (128-bit) keys.**
+///
+/// This is a manual implementation of the Salsa20 core algorithm with 8 rounds,
+/// as required by the MDict format specification.
+///
+/// # State Initialization
+/// The 64-byte (512-bit) Salsa20 state is initialized as a 4x4 matrix of 32-bit words:
+/// ```
+/// [c0, k0, k1, k2]
+/// [k3, c1, iv0, iv1]
+/// [ctr0, ctr1, c2, k4]
+/// [k5, k6, k7, c3]
+/// ```
+/// Where:
+/// - `c0..c3` are constants ("expand 16-byte k").
+/// - `k0..k7` are the key words. For a 16-byte key, `k0..k3` and `k4..k7` are identical.
+/// - `iv0..iv1` is the 64-bit nonce (always zero in MDict).
+/// - `ctr0..ctr1` is the 64-bit block counter.
+///
+/// # Parameters
+/// - `data`: The data to decrypt (modified in-place).
+/// - `key16`: The 16-byte decryption key.
+pub fn salsa_decrypt(data: &mut [u8], key16: &[u8; 16]) {
+    trace!("Decrypting {} bytes with Salsa20/8 (16-byte key)", data.len());
+    let mut state = [0u32; 16];
+    // Constants: "expand 16-byte k" as 32-bit little-endian words
+    state[0] = 0x61707865;
+    state[5] = 0x3120646e;
+    state[10] = 0x79622d36;
+    state[15] = 0x6b206574;
+    // Key: A 16-byte key is used for both the first and second key slots.
+    // This is the standard Salsa20 approach for 128-bit keys.
+    for i in 0..4 {
+        state[1 + i] = LittleEndian::read_u32(&key16[i*4..]);
+        state[11 + i] = LittleEndian::read_u32(&key16[i*4..]);
+    }
+    // IV/Nonce: MDict uses a zero nonce.
+    state[6] = 0;
+    state[7] = 0;
+    let mut keystream_block = [0u8; 64];
+    for (block_index, chunk) in data.chunks_mut(64).enumerate() {
+        // Set the 64-bit block counter for the current chunk.
+        state[8] = block_index as u32;
+        state[9] = (block_index as u64 >> 32) as u32;
+        // Generate the keystream for this block.
+        let mut x = state;
+        for _ in 0..4 { // 8 rounds total (4 iterations of 2 rounds each)
+            // Column rounds
+            quarter_round(&mut x, 0, 4, 8, 12);
+            quarter_round(&mut x, 5, 9, 13, 1);
+            quarter_round(&mut x, 10, 14, 2, 6);
+            quarter_round(&mut x, 15, 3, 7, 11);
+            // Row rounds
+            quarter_round(&mut x, 0, 1, 2, 3);
+            quarter_round(&mut x, 5, 6, 7, 4);
+            quarter_round(&mut x, 10, 11, 8, 9);
+            quarter_round(&mut x, 15, 12, 13, 14);
+        }
+        for (i, val) in x.iter_mut().enumerate() {
+            *val = val.wrapping_add(state[i]);
+        }
+        for (i, word) in x.iter().enumerate() {
+            LittleEndian::write_u32(&mut keystream_block[i*4..], *word);
+        }
+        // Apply the keystream to the data chunk via XOR.
+        for (i, byte) in chunk.iter_mut().enumerate() {
+            *byte ^= keystream_block[i];
+        }
+    }
+}
+/// A single Salsa20 quarter round operation (add-rotate-XOR).
+#[inline(always)]
+fn quarter_round(x: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
+    x[b] ^= x[a].wrapping_add(x[d]).rotate_left(7);
+    x[c] ^= x[b].wrapping_add(x[a]).rotate_left(9);
+    x[d] ^= x[c].wrapping_add(x[b]).rotate_left(13);
+    x[a] ^= x[d].wrapping_add(x[c]).rotate_left(18);
 }
