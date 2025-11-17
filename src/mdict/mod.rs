@@ -218,6 +218,20 @@ impl<T: FileType> MdictReader<T> {
         }
     }
 
+    /// A convenience method that returns an iterator over all `(key, record)` pairs.
+    ///
+    /// This is a shortcut for `reader.iter_keys().with_record_info().with_records()`.
+    ///
+    /// It handles all the intermediate steps of decoding key blocks, resolving record
+    /// metadata, and decoding record blocks efficiently.
+    ///
+    /// The iterator yields `Result<(String, T::Record)>`, where `T::Record` is:
+    /// - `String` for MDX files.
+    /// - `Vec<u8>` for MDD files.
+    pub fn iter_records(&self) -> RecordIterator<'_, T> {
+        self.iter_keys().with_record_info().with_records()
+    }
+    
     /// Finds the record metadata for a given record ID (random access).
     ///
     /// Performs a binary search on the record blocks to locate the containing block.
