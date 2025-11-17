@@ -2,7 +2,7 @@
 
 use std::io::{Read, Seek, SeekFrom};
 use byteorder::{BigEndian, LittleEndian, ByteOrder, ReadBytesExt};
-use adler32::adler32;
+use adler2::adler32_slice;
 use log::{debug, info, warn, trace};
 use super::models::{MdictHeader, MdictVersion, KeyEntry, CompressionType, BlockMeta};
 use super::{utils, crypto, blocks, decoder};
@@ -62,7 +62,7 @@ pub fn parse_v1v2<R: Seek + Read>(
     // Verify checksum (v2.0+ only)
     if header.version == MdictVersion::V2 {
         let checksum_expected = file.read_u32::<BigEndian>()?;
-        let checksum_actual = adler32(info_bytes.as_slice())?;
+        let checksum_actual = adler32_slice(info_bytes.as_slice());
         trace!("Key block info checksum: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
         if checksum_actual != checksum_expected {
             return Err(MdictError::ChecksumMismatch {
@@ -250,7 +250,7 @@ fn decompress_index(
 
         // Verify checksum
         let checksum_expected = BigEndian::read_u32(&compressed[4..8]);
-        let checksum_actual = adler32(decompressed.as_slice())?;
+        let checksum_actual = adler32_slice(decompressed.as_slice());
         trace!("Key index checksum: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
         if checksum_actual != checksum_expected {
             return Err(MdictError::ChecksumMismatch {

@@ -5,7 +5,7 @@ use std::io::{Read, Seek, SeekFrom};
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use encoding_rs::UTF_16LE;
 use quick_xml::{events::Event, Reader};
-use adler32::adler32;
+use adler2::adler32_slice;
 use hex;
 use log::{debug, info, warn, trace};
 use super::models::{MdictHeader, MdictVersion, EncryptionFlags, BlockType};
@@ -36,7 +36,7 @@ pub fn parse<R: Read>(
 
     // Verify checksum
     let checksum_expected = file.read_u32::<LittleEndian>()?;
-    let checksum_actual = adler32(header_bytes.as_slice())?;
+    let checksum_actual = adler32_slice(header_bytes.as_slice());
     trace!("Header checksum: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
     if checksum_actual != checksum_expected {
         return Err(MdictError::ChecksumMismatch {

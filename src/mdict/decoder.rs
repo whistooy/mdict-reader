@@ -1,7 +1,7 @@
 //! Block decoding orchestration (decryption + decompression + verification)
 
 use byteorder::{BigEndian, LittleEndian, ByteOrder};
-use adler32::adler32;
+use adler2::adler32_slice;
 use ripemd::{Digest, Ripemd128};
 use std::cmp::min;
 use log::trace;
@@ -74,7 +74,7 @@ pub fn decode_payload(
     // Step 2: Verify checksum (position depends on version)
     if version == MdictVersion::V3 {
         // V3 checksums the DECRYPTED data before decompression.
-        let checksum_actual = adler32(&*payload)?;
+        let checksum_actual = adler32_slice(payload);
         trace!("V3 block checksum on decrypted data: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
         if checksum_actual != checksum_expected {
             return Err(MdictError::ChecksumMismatch {
@@ -93,7 +93,7 @@ pub fn decode_payload(
 
     // Step 4: Verify checksum for v1/v2 (after decompression)
     if version != MdictVersion::V3 {
-        let checksum_actual = adler32(decompressed.as_slice())?;
+        let checksum_actual = adler32_slice(decompressed.as_slice());
         trace!("V1/V2 block checksum on decrypted data: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
         if checksum_actual != checksum_expected {
             return Err(MdictError::ChecksumMismatch {
