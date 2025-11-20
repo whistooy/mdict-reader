@@ -48,6 +48,10 @@ pub enum MdictError {
     /// The file is encrypted, but no passcode was provided to derive the decryption key.
     #[error("Encrypted file requires a passcode, but none was provided.")]
     PasscodeRequired,
+
+    /// A mutex lock was poisoned, indicating a panic in another thread holding the lock.
+    #[error("A mutex lock was poisoned, indicating a panic in another thread holding the lock.")]
+    LockPoisoned,
 }
 
 /// A convenience `Result` type alias using the crate's `MdictError` type.

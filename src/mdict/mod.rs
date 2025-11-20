@@ -15,7 +15,8 @@ mod utils;
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
 use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::iter::Peekable;
 use std::vec::IntoIter;
 use log::info;
@@ -29,7 +30,7 @@ pub use error::{MdictError, Result};
 /// Supports MDict format versions 1.x, 2.x, and 3.x.
 #[derive(Debug)]
 pub struct MdictReader<T: FileType> {
-    file_path: PathBuf,
+    file: Arc<Mutex<File>>,
     pub header: MdictHeader,
     
     key_blocks: Vec<BlockMeta>,
@@ -94,37 +95,17 @@ impl<T: FileType> MdictReader<T> {
         }
 
         // Branch on version
-        match mdict_header.version {
+        let (key_blocks, record_blocks, total_record_decomp_size, num_entries) = match mdict_header.version {
             MdictVersion::V3 => {
-                Self::new_v3(path, &mut file, mdict_header)
+                Self::parse_v3(&mut file, &mdict_header)?
             }
             MdictVersion::V1 | MdictVersion::V2 => {
-                Self::new_v1v2(path, &mut file, mdict_header)
+                Self::parse_v1v2(&mut file, &mdict_header)?
             }
-        }
-    }
-
-    /// Constructor for v1.x and v2.x files (existing logic)
-    fn new_v1v2(
-        path: &Path,
-        file: &mut File,
-        mdict_header: MdictHeader,
-    ) -> Result<Self> {
-        let (key_blocks, num_entries) = key_blocks::parse_v1v2(file, &mdict_header)?;
-        
-        // Skip to record section
-        let total_key_blocks_size: u64 = key_blocks.iter().map(|b| b.compressed_size).sum();
-        file.seek(SeekFrom::Current(total_key_blocks_size as i64))?;
-        
-        let record_blocks = record_blocks::parse_v1v2(file, &mdict_header)?;
-
-        let total_record_decomp_size: u64 = record_blocks.iter().map(|b| b.decompressed_size).sum();
-
-        info!("MDict file opened: {} key blocks, {} record blocks", 
-              key_blocks.len(), record_blocks.len());
+        };
 
         Ok(Self {
-            file_path: path.to_path_buf(),
+            file: Arc::new(Mutex::new(file)),
             header: mdict_header,
             key_blocks,
             record_blocks,
@@ -134,12 +115,32 @@ impl<T: FileType> MdictReader<T> {
         })
     }
 
-    /// Constructor for v3.0 files
-    fn new_v3(
-        path: &Path,
+    /// Parser for v1.x and v2.x files
+    fn parse_v1v2(
         file: &mut File,
-        mdict_header: MdictHeader,
-    ) -> Result<Self> {
+        header: &MdictHeader,
+    ) -> Result<(Vec<BlockMeta>, Vec<BlockMeta>, u64, u64)> {
+        let (key_blocks, num_entries) = key_blocks::parse_v1v2(file, header)?;
+        
+        // Skip to record section
+        let total_key_blocks_size: u64 = key_blocks.iter().map(|b| b.compressed_size).sum();
+        file.seek(SeekFrom::Current(total_key_blocks_size as i64))?;
+        
+        let record_blocks = record_blocks::parse_v1v2(file, header)?;
+
+        let total_record_decomp_size: u64 = record_blocks.iter().map(|b| b.decompressed_size).sum();
+
+        info!("MDict file opened: {} key blocks, {} record blocks",
+              key_blocks.len(), record_blocks.len());
+
+        Ok((key_blocks, record_blocks, total_record_decomp_size, num_entries))
+    }
+
+    /// Parser for v3.0 files
+    fn parse_v3(
+        file: &mut File,
+        header: &MdictHeader,
+    ) -> Result<(Vec<BlockMeta>, Vec<BlockMeta>, u64, u64)> {
         info!("Parsing v3.0 MDict file");
         
         let key_block_offset = file.stream_position()?;
@@ -150,13 +151,13 @@ impl<T: FileType> MdictReader<T> {
         
         let (num_entries, key_index) = key_blocks::parse_v3_key_index(
             file,
-            &mdict_header,
+            header,
             key_index_offset,
         )?;
         
         let record_index = record_blocks::parse_v3_record_index(
             file,
-            &mdict_header,
+            header,
             record_index_offset,
         )?;
         let key_blocks = key_blocks::parse_v3(
@@ -173,18 +174,10 @@ impl<T: FileType> MdictReader<T> {
 
         let total_record_decomp_size: u64 = record_blocks.iter().map(|b| b.decompressed_size).sum();
 
-        info!("V3.0 file opened: {} key blocks, {} record blocks", 
+        info!("V3.0 file opened: {} key blocks, {} record blocks",
               key_blocks.len(), record_blocks.len());
 
-        Ok(Self {
-            file_path: path.to_path_buf(),
-            header: mdict_header,
-            key_blocks,
-            record_blocks,
-            total_record_decomp_size,
-            num_entries,
-            _file_type: PhantomData,
-        })
+        Ok((key_blocks, record_blocks, total_record_decomp_size, num_entries))
     }
 
     /// Returns the number of key blocks.
@@ -302,8 +295,8 @@ impl<T: FileType> MdictReader<T> {
         let block_meta = self.record_blocks
             .get(block_index)
             .ok_or_else(|| MdictError::InvalidFormat(format!("Invalid block index: {}", block_index)))?;
-        let mut file = File::open(&self.file_path)?;
-        blocks::decode_block(&mut file, block_meta, &self.header)
+        let mut file = self.file.lock().map_err(|_| MdictError::LockPoisoned)?;
+        blocks::decode_block(&mut *file, block_meta, &self.header)
     }
 }
 
@@ -347,12 +340,12 @@ impl<'a, T: FileType> Iterator for KeysIterator<'a, T> {
             }
 
             // Otherwise, load the next block of keys
-            let mut file = match File::open(&self.reader.file_path) {
+            let mut file = match self.reader.file.lock() {
                 Ok(f) => f,
-                Err(e) => return Some(Err(e.into())),
+                Err(_) => return Some(Err(MdictError::LockPoisoned)),
             };
             let block_meta = &self.reader.key_blocks[self.key_block_idx];
-            match key_blocks::decode_and_parse_block(&mut file, block_meta, &self.reader.header) {
+            match key_blocks::decode_and_parse_block(&mut *file, block_meta, &self.reader.header) {
                 Ok(entries) => {
                     self.current_keys = entries.into_iter();
                     self.key_block_idx += 1;
