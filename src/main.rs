@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mdict_reader::{FileType, Mdict, MdictReader};
+use mdict_reader::{FileType, Mdict, MdictError, MdictReader};
 
 // --- Constants ---
 /// The name of the subdirectory for MDD resources, used to keep outputs tidy.
@@ -149,7 +149,9 @@ fn run_extract(args: ExtractArgs) {
         let mdict = open_mdict_or_exit(&path, &args.shared);
         match (task, mdict) {
             (Task::Mdx, Mdict::Mdx(reader)) => {
-                extract_mdx_content(reader, &path, args.format, args.output.as_deref());
+                if let Err(e) = extract_mdx_content(reader, &path, args.format, args.output.as_deref()) {
+                    eprintln!("   ERROR: Failed to extract MDX content from {}: {}", path.display(), e);
+                }
             }
             (Task::Mdd, Mdict::Mdd(reader)) => {
                 // This is the clean, consolidated logic for determining the MDD target directory.
@@ -166,7 +168,9 @@ fn run_extract(args: ExtractArgs) {
                     base_output_path.to_path_buf()
                 };
                 
-                extract_mdd_resources(reader, &path, &target_dir);
+                if let Err(e) = extract_mdd_resources(reader, &path, &target_dir) {
+                    eprintln!("   ERROR: Failed to extract MDD resources from {}: {}", path.display(), e);
+                }
             }
             _ => eprintln!("   WARN: Skipped mismatched file type for task: {}", path.display()),
         }
@@ -174,7 +178,7 @@ fn run_extract(args: ExtractArgs) {
 }
 
 /// Extracts content from an MDX reader.
-fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, format: Format, output_dir: Option<&Path>) {
+fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, format: Format, output_dir: Option<&Path>) -> Result<(), MdictError> {
     println!("\n-> Extracting MDX content from {}...", path.display());
     
     let output_base = get_output_base_path(path, output_dir);
@@ -183,37 +187,54 @@ fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, form
         Format::Jsonl => "jsonl",
     });
 
-    let mut out = create_writer(&out_path);
+    let mut out = create_writer(&out_path)?;
+    let mut first_entry = true;
     for result in reader.iter_records() {
         let (key, def) = match result {
             Ok(pair) => pair,
-            Err(e) => { eprintln!("   WARN: Skipping entry due to error: {}", e); continue; }
+            Err(e) => {
+                eprintln!("   WARN: Skipping entry due to error: {}", e);
+                continue;
+            }
         };
-        let write_result = match format {
-            Format::Text => writeln!(out, "{}\n{}</>\n", key, def.trim_end()),
-            Format::Jsonl => serde_json::to_string(&serde_json::json!({ "key": key, "record": def }))
-                .map_or(Ok(()), |json| writeln!(out, "{}", json)),
+
+        if !first_entry {
+            write!(out, "\r\n")?; // Write separator before subsequent entries
+        }
+        first_entry = false;
+
+        match format {
+            Format::Text => {
+                let trimmed_def = def.trim_end();
+                write!(out, "{}\r\n{}\r\n</>", key, trimmed_def)?;
+            },
+            Format::Jsonl => {
+                let json_string = serde_json::to_string(&serde_json::json!({ "key": key, "record": def }))
+                    .map_err(|e| MdictError::InvalidFormat(format!("JSON serialization failed: {}", e)))?;
+                write!(out, "{}", json_string)?;
+            },
         };
-        if write_result.is_err() { break; }
     }
+    out.flush()?; // Ensure all buffered data is written
+
     println!("   SUCCESS: Entries written to {}", out_path.display());
 
     if let Some(stylesheet) = &reader.header.stylesheet {
         let style_path = output_base.with_file_name(format!("{}_style.css", output_base.file_stem().unwrap_or_default().to_string_lossy()));
-        if fs::write(&style_path, stylesheet).is_ok() {
+        if fs::write(&style_path, stylesheet).is_err() {
+            eprintln!("   WARN: Could not write stylesheet to {}", style_path.display());
+        } else {
             println!("   SUCCESS: Stylesheet written to {}", style_path.display());
         }
     }
+    Ok(())
 }
 
 /// Extracts resources from an MDD reader into a specific target directory.
-fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, target_dir: &Path) {
+fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, target_dir: &Path) -> Result<(), MdictError> {
     println!("\n-> Extracting MDD resources from {}...", path.display());
     
-    if fs::create_dir_all(target_dir).is_err() {
-        eprintln!("   ERROR: Could not create resource directory: {}. Aborting MDD extract.", target_dir.display());
-        return;
-    }
+    fs::create_dir_all(target_dir)?;
 
     let mut success_count = 0;
     for result in reader.iter_records() {
@@ -225,10 +246,12 @@ fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, ta
         let out_path = target_dir.join(rel_path.strip_prefix(std::path::MAIN_SEPARATOR).unwrap_or(&rel_path));
         
         if let Some(parent) = out_path.parent() {
-            if fs::create_dir_all(parent).is_err() { continue; }
+            fs::create_dir_all(parent)?;
         }
-        if fs::write(out_path, &data).is_ok() {
+        if fs::write(&out_path, &data).is_ok() {
             success_count += 1;
+        } else {
+            eprintln!("   WARN: Could not write resource to {}", out_path.display());
         }
     }
     println!(
@@ -237,6 +260,7 @@ fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, ta
         reader.num_entries(),
         target_dir.display()
     );
+    Ok(())
 }
 
 // --- General Helper Functions ---
@@ -324,8 +348,8 @@ fn eprint_and_exit<T: Display>(msg: T) -> ! {
     process::exit(1);
 }
 
-fn create_writer(path: &Path) -> BufWriter<File> {
-    File::create(path).map(BufWriter::new).unwrap_or_else(|e| {
-        eprint_and_exit(format!("Could not create file '{}': {}", path.display(), e));
-    })
+fn create_writer(path: &Path) -> Result<BufWriter<File>, MdictError> {
+    File::create(path)
+        .map(BufWriter::new)
+        .map_err(|e| MdictError::Io(e))
 }

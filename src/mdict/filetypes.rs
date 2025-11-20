@@ -36,7 +36,11 @@ impl FileType for Mdx {
     fn process_record(bytes: &[u8], header: &MdictHeader) -> Result<Self::Record> {
         // Decode using the encoding information from the provided header.
         let (text, _, _) = header.encoding.decode(bytes);
-        Ok(text.into_owned())
+
+        // Strip null terminators
+        let stripped = text.trim_end_matches('\0');
+
+        Ok(stripped.to_owned())
     }
 }
 
