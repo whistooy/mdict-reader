@@ -3,7 +3,7 @@
 use std::io::Read;
 use byteorder::{BigEndian, ReadBytesExt};
 use encoding_rs::{Encoding, UTF_16BE, UTF_16LE};
-use super::error::Result;
+use super::types::error::Result;
 
 /// Read a 4 or 8 byte big-endian number.
 /// 

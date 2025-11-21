@@ -2,8 +2,8 @@
 
 use ripemd::{Digest, Ripemd128};
 use log::{debug, trace};
-use super::models::EncryptionType;
-use super::error::{Result, MdictError};
+use crate::mdict::types::error::{MdictError, Result};
+use crate::mdict::types::models::EncryptionType;
 use byteorder::{ByteOrder, LittleEndian};
 use twox_hash::XxHash64;
 
@@ -117,7 +117,7 @@ pub fn derive_key_from_uuid(uuid: &[u8]) -> Result<[u8; 16]> {
 ///
 /// # State Initialization
 /// The 64-byte (512-bit) Salsa20 state is initialized as a 4x4 matrix of 32-bit words:
-/// ```
+/// ```text
 /// [c0, k0, k1, k2]
 /// [k3, c1, iv0, iv1]
 /// [ctr0, ctr1, c2, k4]

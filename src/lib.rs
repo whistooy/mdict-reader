@@ -13,7 +13,7 @@
 //! ```no_run
 //! use mdict_reader::Mdict;
 //!
-//! let mdict = Mdict::open("path/to/dictionary.mdx", None).unwrap();
+//! let mdict = Mdict::open("path/to/dictionary.mdx", None, None).unwrap();
 //!
 //! if let Mdict::Mdx(reader) = mdict {
 //!     for result in reader.iter_keys() {
@@ -31,7 +31,7 @@
 //! use mdict_reader::{MdictReader, Mdx};
 //!
 //! // The type parameter `Mdx` specializes the reader for dictionary files.
-//! let mdx_reader = MdictReader::<Mdx>::new("path/to/dictionary.mdx", None).unwrap();
+//! let mdx_reader = MdictReader::<Mdx>::new("path/to/dictionary.mdx", None, None).unwrap();
 //!
 //! // The iterator now yields `Result<(String, String)>` directly.
 //! for result in mdx_reader.iter_records() {
@@ -46,17 +46,12 @@ pub mod mdict;
 pub use mdict::{
     // The core, specialized reader struct
     MdictReader,
-    // Models are essential for understanding the data
-    models::{
-        MdictHeader,
-        EncryptionFlags,
-        KeyEntry,
-        RecordInfo,
-    },
-    // The error types
-    error::{MdictError, Result},
     // The file type markers for specialization
-    filetypes::{FileType, Mdx, Mdd},
+    types::filetypes::{FileType, Mdd, Mdx},
+    // The error types
+    types::error::{MdictError, Result},
+    // Models are essential for understanding the data
+    types::models::{EncryptionFlags, KeyEntry, MdictHeader, RecordInfo},
 };
 
 use std::path::Path;

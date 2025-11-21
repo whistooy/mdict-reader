@@ -28,7 +28,7 @@ pub enum MdictError {
     /// A declared count of items does not match the actual number of items found.
     #[error("Count mismatch for {item_type}: expected {expected}, but found {found}")]
     CountMismatch {
-        item_type: &'static str,
+        item_type: String,
         expected: u64,
         found: u64,
     },
@@ -36,7 +36,7 @@ pub enum MdictError {
     /// A buffer or data block has an unexpected size after an operation.
     #[error("Size mismatch for {context}: expected {expected} bytes, but found {found} bytes")]
     SizeMismatch {
-        context: &'static str,
+        context: String,
         expected: u64,
         found: u64,
     },

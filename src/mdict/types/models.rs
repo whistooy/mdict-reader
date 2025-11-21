@@ -101,14 +101,14 @@ impl TryFrom<f32> for MdictVersion {
 
 /// Block type markers used in MDict v3.0
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockType {
+pub enum V3BlockType {
     RecordData = 0x01000000,
     RecordIndex = 0x02000000,
     KeyData = 0x03000000,
     KeyIndex = 0x04000000,
 }
 
-impl TryFrom<u32> for BlockType {
+impl TryFrom<u32> for V3BlockType {
     type Error = MdictError;
     fn try_from(value: u32) -> Result<Self> {
         match value {
@@ -119,6 +119,21 @@ impl TryFrom<u32> for BlockType {
             _ => Err(MdictError::InvalidFormat(
                 format!("Unknown v3 block type: {:#010x}", value)
             )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockType {
+    Key,
+    Record,
+}
+
+impl std::fmt::Display for BlockType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            BlockType::Key => write!(f, "key"),
+            BlockType::Record => write!(f, "record"),
         }
     }
 }

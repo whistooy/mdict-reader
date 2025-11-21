@@ -1,11 +1,13 @@
-//! Decompression operations for MDict format
+//! Payload decompression.
 
 use std::io::Read;
+
 use flate2::read::ZlibDecoder;
-use lzokay::decompress::decompress as lzokay_decompress;
 use log::trace;
-use super::models::CompressionType;
-use super::error::{Result, MdictError};
+use lzokay::decompress::decompress as lzokay_decompress;
+
+use crate::mdict::types::error::{MdictError, Result};
+use crate::mdict::types::models::CompressionType;
 
 /// Decompress a payload using the specified compression type.
 /// 
@@ -46,7 +48,7 @@ pub fn decompress_payload(
     // Verify decompressed size matches expectation
     if decompressed.len() as u64 != expected_size {
         return Err(MdictError::SizeMismatch {
-            context: "decompressed block",
+            context: "decompressed block".to_string(),
             expected: expected_size,
             found: decompressed.len() as u64,
         });
