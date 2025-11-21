@@ -138,11 +138,10 @@ fn run_extract(args: ExtractArgs) {
     }
 
     // 2. Create the top-level output directory if specified.
-    if let Some(output_dir) = &args.output {
-        if fs::create_dir_all(output_dir).is_err() {
+    if let Some(output_dir) = &args.output
+        && fs::create_dir_all(output_dir).is_err() {
             eprint_and_exit(format!("Could not create output directory: {}", output_dir.display()));
         }
-    }
     
     // 3. Execute all tasks in a single, unified loop.
     for (task, path) in tasks {
@@ -265,7 +264,9 @@ fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, ta
 
 // --- General Helper Functions ---
 fn open_mdict_or_exit(file: &Path, args: &SharedArgs) -> Mdict {
-    let passcode_ref = args.passcode.as_deref().and_then(|s| s.split_once(','));
+    let passcode_ref = args.passcode.as_deref()
+        .map(|s| s.split_once(',')
+            .unwrap_or_else(|| eprint_and_exit("Invalid passcode format. Expected 'REGCODE_HEX,EMAIL'.")));
     match Mdict::open(file, passcode_ref, args.encoding.as_deref()) {
         Ok(mdict) => mdict,
         Err(e) => eprint_and_exit(format!("Failed to open '{}': {}", file.display(), e)),
@@ -351,5 +352,5 @@ fn eprint_and_exit<T: Display>(msg: T) -> ! {
 fn create_writer(path: &Path) -> Result<BufWriter<File>, MdictError> {
     File::create(path)
         .map(BufWriter::new)
-        .map_err(|e| MdictError::Io(e))
+        .map_err(MdictError::Io)
 }
