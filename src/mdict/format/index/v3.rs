@@ -15,11 +15,13 @@ use crate::mdict::{
 use super::common;
 use crate::mdict::format::content;
 
+use super::ParseResult;
+
 /// Main parser for v3 files.
 pub fn parse(
     file: &mut File,
     header: &MdictHeader,
-) -> Result<(Vec<BlockMeta>, Vec<BlockMeta>, u64, u64)> {
+) -> Result<ParseResult> {
     info!("Parsing v3.0 MDict file");
 
     let key_block_offset = file.stream_position()?;
@@ -104,13 +106,17 @@ fn parse_block_metadata<R: Read + Seek>(
     Ok(blocks)
 }
 
+/// Result of parsing a v3 index block.
+/// Contains an optional total entry count (for key indexes) and a list of (block_size, decompressed_size) pairs.
+type IndexParseResult = (Option<u64>, Vec<(u64, u64)>);
+
 /// Generic parser for v3 index blocks (key and record).
 fn parse_index<R: Read + Seek>(
     file: &mut R,
     header: &MdictHeader,
     offset: u64,
     block_type: BlockType,
-) -> Result<(Option<u64>, Vec<(u64, u64)>)> {
+) -> Result<IndexParseResult> {
     info!("Parsing and decoding v3.0 {} index", block_type);
 
     file.seek(SeekFrom::Start(offset))?;

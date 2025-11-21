@@ -15,12 +15,13 @@ use crate::mdict::{
     utils,
 };
 use super::common;
+use super::ParseResult;
 
 /// Main parser for v1/v2 files.
 pub fn parse(
     file: &mut File,
     header: &MdictHeader,
-) -> Result<(Vec<BlockMeta>, Vec<BlockMeta>, u64, u64)> {
+) -> Result<ParseResult> {
     let (key_blocks, num_entries) = parse_block_info(file, header, BlockType::Key)?;
 
     // Skip to record section

@@ -12,6 +12,15 @@ pub mod common;
 pub mod v1v2;
 pub mod v3;
 
+/// The result of parsing a dictionary's index.
+///
+/// This tuple contains:
+/// 1.  A `Vec<BlockMeta>` for the key blocks.
+/// 2.  A `Vec<BlockMeta>` for the record blocks.
+/// 3.  A `u64` representing the total decompressed size of all record blocks.
+/// 4.  A `u64` representing the total number of entries in the dictionary.
+pub type ParseResult = (Vec<BlockMeta>, Vec<BlockMeta>, u64, u64);
+
 /// Parses the key and record block metadata based on the MDict version.
 ///
 /// This function reads the index information from the file and returns the
@@ -20,7 +29,7 @@ pub mod v3;
 pub fn parse(
     file: &mut File,
     header: &MdictHeader,
-) -> Result<(Vec<BlockMeta>, Vec<BlockMeta>, u64, u64)> {
+) -> Result<ParseResult> {
     match header.version {
         MdictVersion::V3 => v3::parse(file, header),
         MdictVersion::V1 | MdictVersion::V2 => v1v2::parse(file, header),
