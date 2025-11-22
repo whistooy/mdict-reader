@@ -10,7 +10,7 @@ use super::format;
 use super::iter::{KeysIterator, RecordIterator};
 use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
-use super::types::models::*;
+use super::types::models::{BlockMeta, KeyEntry, MdictHeader, MdictVersion};
 
 /// The main reader for MDict dictionary files.
 ///
@@ -145,23 +145,30 @@ impl<T: FileType> MdictReader<T> {
         self.num_entries
     }
     
-    /// Returns an iterator over `(key_text, record_id)` pairs.
+    /// Returns an iterator over `(key, start, end)` tuples.
     ///
-    /// This is the lightest-weight iterator, only decoding key blocks without
-    /// accessing record data. Use this for tasks like:
-    /// - Building search indexes
-    /// - Listing all dictionary keys
-    /// - Counting entries
+    /// This iterator decodes key blocks and resolves each entry to its byte range
+    /// in the decompressed record stream. The returned tuples contain:
+    /// - `key`: The dictionary key (word/term)
+    /// - `start`: Starting byte offset in the virtual decompressed stream
+    /// - `end`: Ending byte offset (exclusive)
     ///
-    /// Chain with [`.with_record_info()`](KeysIterator::with_record_info) and
-    /// [`.with_records()`](RecordInfoIterator::with_records) to access definitions.
+    /// The byte ranges are self-contained and remain valid even after re-sorting,
+    /// making this ideal for building custom search indexes.
+    ///
+    /// # Use Cases
+    /// - Building sortable search indexes
+    /// - Extracting specific entries by key
+    /// - Custom caching strategies
+    ///
+    /// Chain with [`.with_records()`](KeysIterator::with_records) to access definitions.
     pub fn iter_keys(&self) -> KeysIterator<'_, T> {
         KeysIterator::new(self)
     }
 
     /// Returns an iterator over all `(key, record)` pairs.
     ///
-    /// This is equivalent to `reader.iter_keys().with_record_info().with_records()`.
+    /// This is equivalent to `reader.iter_keys().with_records()`.
     ///
     /// The iterator handles all decoding steps:
     /// 1. Decodes key blocks to get search keys
@@ -172,46 +179,17 @@ impl<T: FileType> MdictReader<T> {
     /// - **MDX files**: `Result<(String, String)>` - key and definition text
     /// - **MDD files**: `Result<(String, Vec<u8>)>` - key and binary resource data
     pub fn iter_records(&self) -> RecordIterator<'_, T> {
-        self.iter_keys().with_record_info().with_records()
+        self.iter_keys().with_records()
     }
     
-    /// Locates record metadata for a given record ID.
+    /// Locates and reads a single record by its byte range.
     ///
-    /// Uses binary search on record blocks to efficiently find the containing block.
-    /// Returns [`RecordInfo`] which describes the record's location within a block.
+    /// Uses binary search on record blocks to efficiently find the containing block,
+    /// then extracts and decodes the record data.
     ///
     /// # Parameters
-    /// * `id` - Starting offset of the record in the virtual decompressed stream
-    /// * `next_id` - Starting offset of the next record (defines record size)
-    pub fn get_record_info(&self, id: u64, next_id: u64) -> Result<RecordInfo> {
-        trace!("Locating record: id={}, next_id={}", id, next_id);
-        
-        if self.record_blocks.is_empty() {
-            return Err(MdictError::InvalidFormat("No record blocks available".to_string()));
-        }
-        
-        // Binary search: find first block where decompressed_offset > id, then take prev.
-        let block_index = self.record_blocks
-            .partition_point(|block| block.decompressed_offset <= id) - 1;
-        let block_meta = self.record_blocks.get(block_index).ok_or_else(|| {
-            MdictError::InvalidFormat(format!("Record ID {} is out of bounds", id))
-        })?;
-        // Validate record is within block bounds
-        if id >= block_meta.decompressed_offset + block_meta.decompressed_size {
-            return Err(MdictError::InvalidFormat(format!("Record ID {} exceeds block bounds", id)));
-        }
-        let offset_in_block = id - block_meta.decompressed_offset;
-        let size = next_id - id;
-        Ok(RecordInfo {
-            block_index,
-            offset_in_block,
-            size,
-        })
-    }
-    
-    /// Reads and decodes a single record from the file.
-    ///
-    /// This is the main method for random-access record retrieval.
+    /// * `start` - Starting byte offset in the virtual decompressed stream
+    /// * `end` - Ending byte offset (exclusive)
     ///
     /// # Return Type
     /// - **MDX**: `Result<String>` - decoded definition text
@@ -220,15 +198,63 @@ impl<T: FileType> MdictReader<T> {
     /// # Performance Note
     /// This method performs file I/O for each call. For sequential access,
     /// prefer using [`iter_records()`](Self::iter_records) which caches blocks.
-    pub fn read_record(&self, record_info: &RecordInfo) -> Result<T::Record> {
-        trace!(
-            "Reading record from block {}, offset {}, size {}",
-            record_info.block_index,
-            record_info.offset_in_block,
-            record_info.size
-        );
-        let block_bytes = self.read_record_block(record_info.block_index)?;
-        self.parse_record(&block_bytes, record_info)
+    pub fn read_record(&self, start: u64, end: u64) -> Result<T::Record> {
+        trace!("Reading record: range=[{}..{}]", start, end);
+        
+        let block_meta = self.find_block_by_offset(start)?;
+        
+        let block_start = start - block_meta.decompressed_offset;
+        let block_end = end - block_meta.decompressed_offset;
+        
+        let block_bytes = self.read_and_decode_block(*block_meta)?;
+        
+        self.parse_record(&block_bytes, block_start, block_end)
+    }
+
+    /// Finds the record block containing the given offset.
+    ///
+    /// This is a helper method for advanced users who need block-level information
+    /// for custom caching or processing strategies.
+    ///
+    /// # Parameters
+    /// * `offset` - Byte offset in the virtual decompressed stream
+    ///
+    /// # Returns
+    /// A reference to the [`BlockMeta`] containing the offset, which includes:
+    /// - `decompressed_offset`: Where this block starts in the virtual stream
+    /// - `decompressed_size`: Size of the decompressed block
+    /// - `compressed_size`: Size of the compressed block in the file
+    /// - `file_offset`: Where the compressed block is located in the file (unique identifier)
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use mdict_reader::{MdictReader, Mdx};
+    /// # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None).unwrap();
+    /// // Find which block contains offset 1000
+    /// let block_meta = reader.find_block_by_offset(1000).unwrap();
+    /// println!("Block at file offset: {}", block_meta.file_offset);
+    /// ```
+    pub fn find_block_by_offset(&self, offset: u64) -> Result<&BlockMeta> {
+        if self.record_blocks.is_empty() {
+            return Err(MdictError::InvalidFormat("No record blocks available".to_string()));
+        }
+        
+        let block_index = self.record_blocks
+            .partition_point(|block| block.decompressed_offset <= offset)
+            .saturating_sub(1);
+        
+        let block_meta = self.record_blocks.get(block_index).ok_or_else(|| {
+            MdictError::InvalidFormat(format!("Offset {} is out of bounds", offset))
+        })?;
+        
+        // Validate offset is within block bounds
+        if offset >= block_meta.decompressed_offset + block_meta.decompressed_size {
+            return Err(MdictError::InvalidFormat(
+                format!("Offset {} exceeds block bounds", offset)
+            ));
+        }
+        
+        Ok(block_meta)
     }
 
     /// Extracts a record from an already-decompressed block.
@@ -238,45 +264,31 @@ impl<T: FileType> MdictReader<T> {
     ///
     /// # Parameters
     /// * `block_bytes` - Decompressed block data
-    /// * `info` - Record location within the block
-    pub fn parse_record(&self, block_bytes: &[u8], info: &RecordInfo) -> Result<T::Record> {
-        content::parse_record::<T>(block_bytes, info, &self.header)
+    /// * `start` - Start position of the record within the block
+    /// * `end` - End position of the record within the block (exclusive)
+    pub fn parse_record(&self, block_bytes: &[u8], start: u64, end: u64) -> Result<T::Record> {
+        content::parse_record::<T>(block_bytes, start, end, &self.header)
     }
     
-    /// Reads and decompresses a record block by index.
-    ///
-    /// This method is public to enable custom caching strategies. Most users
-    /// should use the higher-level iterator APIs instead.
-    ///
-    /// # Returns
-    /// The fully decompressed block data ready for record extraction.
-    pub fn read_record_block(&self, block_index: usize) -> Result<Vec<u8>> {
-        self.read_block(BlockType::Record, block_index)
-    }
-
     /// Reads and parses all key entries from a key block.
-    pub(crate) fn read_key_block_entries(&self, block_index: usize) -> Result<Vec<KeyEntry>> {
-        trace!("Reading key block {} entries", block_index);
-        let decompressed = self.read_block(BlockType::Key, block_index)?;
+    pub(crate) fn read_key_block_entries(&self, block_meta: BlockMeta) -> Result<Vec<KeyEntry>> {
+        trace!("Reading key block at file offset {}", block_meta.file_offset);
+        let decompressed = self.read_and_decode_block(block_meta)?;
         content::parse_key_entries(&decompressed, &self.header)
     }
 
-    fn read_block(&self, block_type: BlockType, block_index: usize) -> Result<Vec<u8>> {
-        let block_meta = self
-            .get_block_meta(block_type, block_index)
-            .ok_or_else(|| MdictError::InvalidFormat(format!("Invalid {} block index: {}", block_type, block_index)))?;
-        self.read_and_decode_block(*block_meta)
-    }
-
-    fn get_block_meta(&self, block_type: BlockType, block_index: usize) -> Option<&BlockMeta> {
-        match block_type {
-            BlockType::Key => self.key_blocks.get(block_index),
-            BlockType::Record => self.record_blocks.get(block_index),
-        }
-    }
-
     /// Reads, decrypts, and decompresses a block from the file.
-    fn read_and_decode_block(&self, block_meta: BlockMeta) -> Result<Vec<u8>> {
+    ///
+    /// This is a public method to enable custom caching strategies. Advanced users
+    /// can call [`find_block_by_offset()`](Self::find_block_by_offset) to get the
+    /// [`BlockMeta`], then use this method to read and decode the block.
+    ///
+    /// # Parameters
+    /// * `block_meta` - Block metadata containing file offset and sizes
+    ///
+    /// # Returns
+    /// The fully decompressed block data ready for record extraction.
+    pub fn read_and_decode_block(&self, block_meta: BlockMeta) -> Result<Vec<u8>> {
         trace!(
             "Reading block: offset={}, compressed={} bytes, decompressed={} bytes",
             block_meta.file_offset,

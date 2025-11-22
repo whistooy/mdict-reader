@@ -40,17 +40,6 @@ pub struct MdictHeader {
     pub uuid: Option<Vec<u8>>,
 }
 
-/// Location information for a specific record within a decompressed block.
-///
-/// This structure enables efficient random access to dictionary entries
-/// without re-parsing entire blocks.
-#[derive(Debug, Clone)]
-pub struct RecordInfo {
-    pub block_index: usize,
-    pub offset_in_block: u64,
-    pub size: u64,
-}
-
 /// A single key entry from the dictionary index.
 ///
 /// Associates a search key (word/term) with its record ID, which points to

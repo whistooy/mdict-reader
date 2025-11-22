@@ -152,22 +152,26 @@ pub fn parse_key_entries(data: &[u8], header: &MdictHeader) -> Result<Vec<KeyEnt
 ///
 /// # Parameters
 /// * `block_bytes` - Complete decompressed block
-/// * `info` - Record location within the block
+/// * `start` - Start position of the record within the block
+/// * `end` - End position of the record within the block (exclusive)
 /// * `header` - File header with encoding information
 pub fn parse_record<T: FileType>(
     block_bytes: &[u8],
-    info: &RecordInfo,
+    start: u64,
+    end: u64,
     header: &MdictHeader,
 ) -> Result<T::Record> {
     trace!(
-        "Extracting {} record: offset={}, size={}",
+        "Extracting {} record: range=[{}..{}], size={}",
         T::DEBUG_NAME,
-        info.offset_in_block,
-        info.size
+        start,
+        end,
+        end - start
     );
     
-    let start = info.offset_in_block as usize;
-    let end = start + info.size as usize;
+    let start = start as usize;
+    let end = end as usize;
+    
     if end > block_bytes.len() {
         return Err(MdictError::InvalidFormat(format!(
             "Record location [{}..{}] is out of bounds for block of size {}",
