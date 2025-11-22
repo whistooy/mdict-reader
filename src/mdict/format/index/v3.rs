@@ -1,4 +1,11 @@
-//! Parser for MDict format version 3.0.
+//! Index parser for MDict format version 3.0.
+//!
+//! V3 introduces a fundamentally different structure from v1/v2:
+//! - Four separate blocks: KeyData, KeyIndex, RecordData, RecordIndex
+//! - Blocks can appear in any order (requires scanning)
+//! - Each block has a 12-byte header (4-byte type + 8-byte size)
+//! - Index blocks are compressed and contain metadata for data blocks
+//! - Data blocks have inline size headers that may conflict with index
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -17,7 +24,20 @@ use crate::mdict::format::content;
 
 use super::ParseResult;
 
-/// Main parser for v3 files.
+/// Parses the complete index structure for v3.0 MDict files.
+///
+/// V3 parsing workflow:
+/// 1. Scan file to locate all four block types
+/// 2. Parse key index to get entry count and block metadata
+/// 3. Parse record index to get block metadata
+/// 4. Read data block headers and reconcile with index metadata
+///
+/// # Returns
+/// A tuple containing:
+/// - `Vec<BlockMeta>`: Key block metadata
+/// - `Vec<BlockMeta>`: Record block metadata
+/// - `u64`: Total decompressed size of all record blocks
+/// - `u64`: Total number of dictionary entries
 pub fn parse(
     file: &mut File,
     header: &MdictHeader,
@@ -26,13 +46,15 @@ pub fn parse(
 
     let key_block_offset = file.stream_position()?;
 
-    // Scan for block offsets
+    // Step 1: Scan to locate all four required blocks
     let (key_data_offset, key_index_offset, record_data_offset, record_index_offset) =
         scan_block_offsets(file, key_block_offset)?;
 
+    // Step 2: Parse indexes to get metadata
     let (num_entries, key_index) = parse_key_index(file, header, key_index_offset)?;
     let record_index = parse_record_index(file, header, record_index_offset)?;
 
+    // Step 3: Read data block headers and build final metadata
     let key_blocks = parse_block_metadata(file, key_data_offset, &key_index, BlockType::Key)?;
     let record_blocks = parse_block_metadata(file, record_data_offset, &record_index, BlockType::Record)?;
 
@@ -47,7 +69,20 @@ pub fn parse(
     Ok((key_blocks, record_blocks, total_record_decomp_size, num_entries))
 }
 
-/// Generic parser for v3 block metadata (used for both key and record blocks).
+/// Parses data block headers and reconciles with index metadata.
+///
+/// V3 data blocks have inline size headers that sometimes conflict with
+/// the index. This function reads both and uses index values when there's
+/// a mismatch, as they're generally more reliable.
+///
+/// # Parameters
+/// - `file`: File handle
+/// - `offset`: Starting offset of the data section
+/// - `index`: Metadata pairs from the corresponding index block
+/// - `block_type`: Whether parsing key or record blocks
+///
+/// # Returns
+/// Vector of [`BlockMeta`] with finalized size and offset information
 fn parse_block_metadata<R: Read + Seek>(
     file: &mut R,
     offset: u64,
@@ -58,6 +93,7 @@ fn parse_block_metadata<R: Read + Seek>(
     
     file.seek(SeekFrom::Start(offset))?;
     
+    // Read data section header
     let num_blocks = file.read_u32::<BigEndian>()? as usize;
     let _total_size = file.read_u64::<BigEndian>()?;
     
@@ -66,15 +102,18 @@ fn parse_block_metadata<R: Read + Seek>(
     let mut blocks = Vec::with_capacity(num_blocks);
     let mut decompressed_offset = 0u64;
     
+    // Process each data block
     for i in 0..num_blocks {
+        // Read inline size headers (8 bytes total)
         let inline_decomp = file.read_u32::<BigEndian>()? as u64;
         let inline_comp = file.read_u32::<BigEndian>()? as u64;
       
         let mut compressed_size = inline_comp;
         let mut decompressed_size = inline_decomp;
         
+        // Reconcile inline headers with index metadata
         if let Some(&(index_block_size, index_decomp)) = index.get(i) {
-            // The size in the index includes the 8-byte header, so we subtract it to get the payload size.
+            // Index size includes the 8-byte header; subtract it for payload size
             let index_comp = index_block_size.saturating_sub(8);
             if (inline_comp, inline_decomp) != (index_comp, index_decomp) {
                 warn!(
@@ -88,6 +127,7 @@ fn parse_block_metadata<R: Read + Seek>(
             return Err(MdictError::InvalidFormat(format!("Missing metadata for {} block {} in {} index", block_type, i, block_type)));
         }
         
+        // Record the actual data offset (after headers)
         let file_offset = file.stream_position()?;
         
         blocks.push(BlockMeta {
@@ -96,8 +136,9 @@ fn parse_block_metadata<R: Read + Seek>(
             file_offset,
             decompressed_offset,
         });
-        
+        // Skip to next block
         file.seek(SeekFrom::Current(compressed_size as i64))?;
+        
         
         decompressed_offset += decompressed_size;
     }
@@ -106,11 +147,25 @@ fn parse_block_metadata<R: Read + Seek>(
     Ok(blocks)
 }
 
-/// Result of parsing a v3 index block.
-/// Contains an optional total entry count (for key indexes) and a list of (block_size, decompressed_size) pairs.
+/// Result type for index parsing operations.
+///
+/// Contains:
+/// - Optional total entry count (present only for key indexes)
+/// - List of (block_size, decompressed_size) pairs for validation
 type IndexParseResult = (Option<u64>, Vec<(u64, u64)>);
 
-/// Generic parser for v3 index blocks (key and record).
+/// Generic parser for v3 index blocks.
+///
+/// Index blocks are structured as:
+/// - Header: num_blocks (4 bytes) + total_size (8 bytes)
+/// - Multiple compressed sub-blocks containing metadata entries
+///
+/// Each metadata entry format differs by type:
+/// - Key: entry_count + first_key + last_key + block_size + decomp_size
+/// - Record: block_size + decomp_size
+///
+/// # Returns
+/// Tuple of (optional entry count, metadata pairs for validation)
 fn parse_index<R: Read + Seek>(
     file: &mut R,
     header: &MdictHeader,
@@ -121,6 +176,7 @@ fn parse_index<R: Read + Seek>(
 
     file.seek(SeekFrom::Start(offset))?;
 
+    // Read index section header
     let num_blocks = file.read_u32::<BigEndian>()? as usize;
     let _total_size = file.read_u64::<BigEndian>()?;
     debug!("{} index contains {} sub-blocks", block_type, num_blocks);
@@ -128,12 +184,15 @@ fn parse_index<R: Read + Seek>(
     let mut total_entries = if block_type == BlockType::Key { Some(0u64) } else { None };
     let mut index_pairs = Vec::new();
 
+    // Process each compressed sub-block
     for _ in 0..num_blocks {
         let decompressed_size = file.read_u32::<BigEndian>()? as u64;
         let compressed_size = file.read_u32::<BigEndian>()? as u64;
 
         let mut compressed = vec![0u8; compressed_size as usize];
         file.read_exact(&mut compressed)?;
+        
+        // Decompress and decrypt if necessary
         let decompressed = content::decode_block(
             &mut compressed,
             decompressed_size,
@@ -142,6 +201,7 @@ fn parse_index<R: Read + Seek>(
         )?;
         let mut reader = decompressed.as_slice();
 
+        // Validate record index block size (must be multiple of 16)
         if block_type == BlockType::Record && decompressed.len() % 16 != 0 {
             return Err(MdictError::InvalidFormat(format!(
                 "Record index block has invalid size: {}",
@@ -149,22 +209,27 @@ fn parse_index<R: Read + Seek>(
             )));
         }
 
+        // Extract metadata entries from this sub-block
         while !reader.is_empty() {
             match block_type {
                 BlockType::Key => {
+                    // Key entries include count and text ranges
                     let num_entries_in_block = reader.read_u32::<BigEndian>()? as u64;
                     if let Some(total) = total_entries.as_mut() {
                         *total += num_entries_in_block;
                     }
 
+                    // Skip first and last key texts (boundary keys for range queries, not needed for metadata extraction)
                     common::skip_text(&mut reader, header)?;
                     common::skip_text(&mut reader, header)?;
 
+                    // Read block sizes (4 bytes each in v3 key index)
                     let block_size = utils::read_number(&mut reader, 4)?;
                     let decompressed_size = utils::read_number(&mut reader, 4)?;
                     index_pairs.push((block_size, decompressed_size));
                 }
                 BlockType::Record => {
+                    // Record entries are simpler (just sizes, 8 bytes each in v3 record index)
                     let block_size = utils::read_number(&mut reader, 8)?;
                     let decompressed_size = utils::read_number(&mut reader, 8)?;
                     index_pairs.push((block_size, decompressed_size));
@@ -180,7 +245,9 @@ fn parse_index<R: Read + Seek>(
     Ok((total_entries, index_pairs))
 }
 
-/// Parse v3.0 key index to get total entry count and metadata.
+/// Parses the key index block and extracts entry count.
+///
+/// Wrapper around [`parse_index`] that ensures the entry count is returned.
 fn parse_key_index<R: Read + Seek>(
     file: &mut R,
     header: &MdictHeader,
@@ -190,7 +257,10 @@ fn parse_key_index<R: Read + Seek>(
     Ok((total_entries.unwrap_or(0), index_pairs))
 }
 
-/// Read and parse the v3 record index block if present.
+/// Parses the record index block.
+///
+/// Wrapper around [`parse_index`] that discards the entry count
+/// (not present in record indexes).
 fn parse_record_index<R: Seek + Read>(
     file: &mut R,
     header: &MdictHeader,
@@ -200,8 +270,17 @@ fn parse_record_index<R: Seek + Read>(
     Ok(index_pairs)
 }
 
-/// Scan the file to locate block offsets.
-/// Returns (key_data_offset, key_index_offset, record_data_offset, record_index_offset).
+/// Scans the v3 file structure to locate all four required blocks.
+///
+/// V3 blocks can appear in any order, so we must scan the entire structure.
+/// Each block starts with a 12-byte header:
+/// - 4 bytes: block type identifier
+/// - 8 bytes: block data size (excluding header)
+///
+/// # Returns
+/// A tuple of (key_data_offset, key_index_offset, record_data_offset, record_index_offset)
+///
+/// # Errors
 /// Returns an error if any of the four required blocks are missing.
 pub fn scan_block_offsets<R: Read + Seek>(
     file: &mut R,
@@ -211,6 +290,7 @@ pub fn scan_block_offsets<R: Read + Seek>(
 
     file.seek(SeekFrom::Start(start_offset))?;
 
+    // Track which blocks we've found
     let mut offsets = [
         (V3BlockType::KeyData, None),
         (V3BlockType::KeyIndex, None),
@@ -218,6 +298,7 @@ pub fn scan_block_offsets<R: Read + Seek>(
         (V3BlockType::RecordIndex, None),
     ];
 
+    // Scan through all blocks until EOF
     while let Ok(block_type_raw) = file.read_u32::<BigEndian>() {
         let block_type = V3BlockType::try_from(block_type_raw)?;
         let block_size = file.read_u64::<BigEndian>()?;
@@ -228,19 +309,19 @@ pub fn scan_block_offsets<R: Read + Seek>(
             block_type, block_size, block_data_offset
         );
 
-        // Find the corresponding offset in our array and set it
+        // Record this block's offset
         if let Some(offset) = offsets.iter_mut().find(|(t, _)| *t == block_type) {
             offset.1 = Some(block_data_offset);
         } else {
-            // This case should not be reached with our BlockType enum, but good for safety
+            // Unknown block type (shouldn't happen with proper validation)
             warn!("Ignoring unknown block type: {:#010x}", block_type_raw);
         }
 
-        // Skip to the next block header
+        // Skip this block's data to find the next header
         file.seek(SeekFrom::Current(block_size as i64))?;
     }
 
-    // Unpack the results, checking for missing blocks
+    // Validate all required blocks were found
     let get_offset = |block_type: V3BlockType| {
         offsets
             .iter()

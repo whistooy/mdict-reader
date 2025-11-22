@@ -1,3 +1,23 @@
+//! Iterators for sequential access to MDict dictionary entries.
+//!
+//! This module provides a layered iterator design for efficiently traversing
+//! dictionary data with progressive enrichment:
+//!
+//! 1. [`KeysIterator`] - Base iterator yielding `(key, record_id)` pairs
+//! 2. [`RecordInfoIterator`] - Adds record location metadata
+//! 3. [`RecordIterator`] - Fully resolved `(key, record)` pairs with caching
+//!
+//! # Example
+//! ```no_run
+//! # use mdict_reader::{MdictReader, Mdx};
+//! # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None).unwrap();
+//! // Iterate through all definitions
+//! for result in reader.iter_records() {
+//!     let (key, definition) = result.unwrap();
+//!     println!("{}: {}", key, definition);
+//! }
+//! ```
+
 use std::iter::Peekable;
 use std::vec::IntoIter;
 
@@ -6,11 +26,13 @@ use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
 use super::types::models::{KeyEntry, RecordInfo};
 
-// --- ITERATORS ---
-
-/// An iterator over `Result<(key_text, record_id)>` pairs.
+/// Iterator over dictionary keys and their record IDs.
 ///
-/// Created by [`MdictReader::iter_keys()`].
+/// This is the lightest-weight iterator, only decoding key blocks without
+/// touching record data. It yields `Result<(String, u64)>` pairs where the
+/// u64 is the record's offset in the virtual decompressed stream.
+///
+/// Created by [`MdictReader::iter_keys()`](crate::MdictReader::iter_keys).
 pub struct KeysIterator<'a, T: FileType> {
     reader: &'a MdictReader<T>,
     key_block_idx: usize,
@@ -26,8 +48,10 @@ impl<'a, T: FileType> KeysIterator<'a, T> {
         }
     }
 
-    /// Consumes the keys iterator and returns a new iterator that yields
-    /// `Result<(key_text, RecordInfo)>` pairs.
+    /// Transforms this iterator to include record location metadata.
+    ///
+    /// The returned [`RecordInfoIterator`] resolves each record ID to a
+    /// [`RecordInfo`] structure containing block index and offset information.
     pub fn with_record_info(self) -> RecordInfoIterator<'a, T> {
         RecordInfoIterator {
             reader: self.reader, 
@@ -43,23 +67,23 @@ impl<'a, T: FileType> Iterator for KeysIterator<'a, T> {
     
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            // If there are keys in the current block, yield one
+            // Try to get next key from current block
             if let Some(entry) = self.current_keys.next() {
                 return Some(Ok((entry.text, entry.id)));
             }
 
-            // If we've processed all blocks, we're done
+            // Check if all key blocks have been processed
             let key_blocks = self.reader.key_blocks();
             if self.key_block_idx >= key_blocks.len() {
                 return None;
             }
 
-            // Otherwise, load the next block of keys
+            // Load and decompress next key block
             match self.reader.read_key_block_entries(self.key_block_idx) {
                 Ok(entries) => {
                     self.current_keys = entries.into_iter();
                     self.key_block_idx += 1;
-                    // Loop again to get the first entry from the new block
+                    // Continue loop to yield first entry from new block
                 }
                 Err(e) => return Some(Err(e)),
             }
@@ -67,9 +91,13 @@ impl<'a, T: FileType> Iterator for KeysIterator<'a, T> {
     }
 }
 
-/// An iterator over `Result<(key_text, RecordInfo)>` pairs.
+/// Iterator over keys with resolved record location metadata.
 ///
-/// Created by calling `.with_record_info()` on a [`KeysIterator`].
+/// This iterator extends [`KeysIterator`] by resolving record IDs to
+/// [`RecordInfo`] structures, which describe exactly where each record
+/// is located within the file's block structure.
+///
+/// Created by [`KeysIterator::with_record_info()`].
 pub struct RecordInfoIterator<'a, T: FileType> {
     keys_iter: Peekable<KeysIterator<'a, T>>,
     reader: &'a MdictReader<T>,
@@ -78,8 +106,10 @@ pub struct RecordInfoIterator<'a, T: FileType> {
 }
 
 impl<'a, T: FileType> RecordInfoIterator<'a, T> {
-    /// Consumes this iterator and returns a new one that yields the full
-    /// `Result<(key_text, definition_string)>` pair for each entry.
+    /// Transforms this iterator to include full record data.
+    ///
+    /// The returned [`RecordIterator`] decodes and caches record blocks,
+    /// yielding complete `(key, record)` pairs.
     pub fn with_records(self) -> RecordIterator<'a, T> {
         RecordIterator {
             reader: self.reader,
@@ -130,11 +160,16 @@ impl<'a, T: FileType> Iterator for RecordInfoIterator<'a, T> {
     }
 }
 
-/// An iterator over `Result<(key, definition)>` pairs.
+/// Iterator over complete dictionary entries with record data.
 ///
-/// This iterator is stateful and performs internal caching to efficiently
-/// read the dictionary sequentially. Created by calling `.with_records()`
-/// on a [`RecordInfoIterator`].
+/// This is the most complete iterator, yielding `Result<(String, T::Record)>`
+/// where `T::Record` is `String` for MDX files and `Vec<u8>` for MDD files.
+///
+/// # Performance
+/// This iterator caches decompressed record blocks to avoid redundant
+/// decompression when multiple entries reside in the same block.
+///
+/// Created by [`RecordInfoIterator::with_records()`].
 pub struct RecordIterator<'a, T: FileType> {
     record_info_iter: RecordInfoIterator<'a, T>,
     reader: &'a MdictReader<T>,
@@ -151,7 +186,7 @@ impl<'a, T: FileType> Iterator for RecordIterator<'a, T> {
             Err(e) => return Some(Err(e)),
         };
 
-        // Check if we need to decode a new record block
+        // Check if we need to load a new record block
         if self.cached_block_index != Some(record_info.block_index) {
             match self.reader.read_record_block(record_info.block_index) {
                 Ok(bytes) => {
@@ -162,7 +197,7 @@ impl<'a, T: FileType> Iterator for RecordIterator<'a, T> {
             }
         }
         
-        // Parse the record from the cached block
+        // Extract record from cached block data
         match self.reader.parse_record(&self.cached_block_bytes, &record_info) {
             Ok(record) => Some(Ok((key_text, record))),
             Err(e) => Some(Err(e)),

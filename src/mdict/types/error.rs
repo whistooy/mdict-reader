@@ -1,4 +1,8 @@
-//! Custom error types for the mdict-reader crate.
+//! Error types and result aliases for MDict file operations.
+//!
+//! This module defines all error conditions that can occur during MDict file
+//! parsing, decoding, and validation. All errors use `thiserror` for consistent
+//! error messages and automatic `Display` implementations.
 
 use thiserror::Error;
 
@@ -49,8 +53,9 @@ pub enum MdictError {
     #[error("Encrypted file requires a passcode, but none was provided.")]
     PasscodeRequired,
 
-    /// A mutex lock was poisoned, indicating a panic in another thread holding the lock.
-    #[error("A mutex lock was poisoned, indicating a panic in another thread holding the lock.")]
+    /// A mutex lock was poisoned due to a panic in another thread.
+    /// This indicates a critical internal error.
+    #[error("Internal error: mutex lock poisoned due to panic in another thread")]
     LockPoisoned,
 }
 

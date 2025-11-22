@@ -1,4 +1,10 @@
-//! MDict header parsing and master key derivation
+//! MDict file header parsing and encryption key derivation.
+//!
+//! This module handles:
+//! - Parsing the XML header from MDict files
+//! - Validating header checksums
+//! - Extracting metadata (title, encoding, encryption flags, etc.)
+//! - Deriving master decryption keys from passcodes or UUIDs
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -15,29 +21,36 @@ use crate::mdict::types::{
 };
 use crate::mdict::utils;
 
-/// Parse the MDict file header.
-/// 
-/// Header structure:
-/// - 4 bytes: Header length (big-endian)
-/// - N bytes: XML content (UTF-16LE for v1/v2, UTF-8 for v3)
-/// - 4 bytes: Adler32 checksum (little-endian)
-/// 
-/// If the file is encrypted and a passcode is configured, derives the master key.
+/// Parses the MDict file header from the beginning of the file.
+///
+/// # Header Structure
+/// ```text
+/// [4 bytes] Header length (big-endian u32)
+/// [N bytes] XML metadata (UTF-16LE for v1/v2, UTF-8 for v3)
+/// [4 bytes] Adler32 checksum (little-endian u32)
+/// ```
+///
+/// # Parameters
+/// * `file` - Reader positioned at the start of an MDict file
+/// * `passcode` - Optional `(regcode_hex, user_email)` for encrypted files
+///
+/// # Returns
+/// A complete [`MdictHeader`] with all metadata and derived keys.
 pub fn parse<R: Read>(
     file: &mut R,
     passcode: Option<(&str, &str)>,
 ) -> Result<MdictHeader> {
     info!("Parsing MDict header");
 
-    // Read header length
+    // Step 1: Read header length
     let header_len = file.read_u32::<BigEndian>()?;
     trace!("Header length: {} bytes", header_len);
 
-    // Read header content
+    // Step 2: Read header content
     let mut header_bytes = vec![0u8; header_len as usize];
     file.read_exact(&mut header_bytes)?;
 
-    // Verify checksum
+    // Step 3: Verify header integrity
     let checksum_expected = file.read_u32::<LittleEndian>()?;
     let checksum_actual = adler32_slice(header_bytes.as_slice());
     trace!("Header checksum: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
@@ -48,36 +61,34 @@ pub fn parse<R: Read>(
         });
     }
 
-    // Decode header based on encoding detection
-    // v1/v2: UTF-16LE (ends with \x00\x00)
-    // v3:    UTF-8 (ends with \x00)
+    // Step 4: Decode header based on version detection
+    // - v1/v2: UTF-16LE with \x00\x00 terminator
+    // - v3: UTF-8 without double-null terminator
     let decoded_header = if header_bytes.ends_with(&[0, 0]) {
         debug!("Header ends with \\x00\\x00, decoding as UTF-16LE (likely v1/v2)");
-        // The spec implies the terminator should be removed before decoding.
+        // Remove the 2-byte null terminator before decoding
         let trimmed_bytes = &header_bytes[..header_bytes.len() - 2];
         let (s, _, _) = UTF_16LE.decode(trimmed_bytes);
         s.into_owned()
     } else {
         debug!("Header does not end with \\x00\\x00, decoding as UTF-8 (likely v3)");
-        // V3 headers are not null-terminated in the same way.
-        // We use from_utf8_lossy to be safe, though it should be valid UTF-8.
+        // V3 uses UTF-8; from_utf8_lossy handles any encoding issues gracefully
         String::from_utf8_lossy(&header_bytes).into_owned()
     };
 
-    // Sanitize XML (remove control characters except whitespace)
+    // Step 5: Sanitize XML (remove control characters except whitespace)
     let sanitized_header: String = decoded_header
         .chars()
         .filter(|c| !c.is_control() || c.is_whitespace())
         .collect();
 
-    // Parse XML attributes
+    // Step 6: Parse XML to extract attributes
     let attrs = parse_xml_attributes(&sanitized_header)?;
 
-    // Build header struct
+    // Step 7: Build header structure from attributes
     let mut header = build_header_from_attributes(&attrs)?;
     
-    // Final check: If the XML parsing succeeded but gave us a version that
-    // contradicts our encoding guess, something is very wrong.
+    // Step 8: Validate encoding/version consistency
     if header.version == MdictVersion::V3 && !header_bytes.ends_with(&[0, 0]) {
         debug!(
             "Consistency check passed: Version is {} (>= 3.0) and header was parsed as UTF-8.",
@@ -96,7 +107,7 @@ pub fn parse<R: Read>(
         );
     }
 
-    // Derive master key if passcode provided or UUID for v3
+    // Step 9: Derive master decryption key
     header.master_key = try_derive_master_key(
         passcode,
         header.uuid.as_ref(),
@@ -115,7 +126,9 @@ pub fn parse<R: Read>(
     Ok(header)
 }
 
-/// Parse XML string to extract attributes as HashMap.
+/// Extracts all attributes from the root XML element.
+///
+/// The MDict header is a single XML element with all metadata as attributes.
 fn parse_xml_attributes(xml: &str) -> Result<HashMap<String, String>> {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
@@ -142,9 +155,11 @@ fn parse_xml_attributes(xml: &str) -> Result<HashMap<String, String>> {
     }
 }
 
-/// Build MdictHeader from XML attributes.
+/// Constructs a [`MdictHeader`] from parsed XML attributes.
+///
+/// Applies defaults for missing optional fields and validates required fields.
 fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<MdictHeader> {
-    // Parse version
+    // Extract and parse version number
     let version_str = attrs
         .get("GeneratedByEngineVersion")
         .map(String::as_str)
@@ -156,18 +171,18 @@ fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<Mdict
         ))
     })?;
 
-    // Convert to behavioral enum for parsing logic
+    // Convert to version enum for type-safe handling
     let version_enum = MdictVersion::try_from(version_f32)?;
     debug!("MDict version: {} (parsed as {:?})", version_str, version_enum);
 
-    // Parse encoding from header
+    // Extract text encoding (defaults to UTF-8)
     let encoding = attrs
         .get("Encoding")
         .map(|s| utils::parse_encoding(s.as_str()))
         .unwrap_or(encoding_rs::UTF_8);
     debug!("Text encoding: {}", encoding.name());
 
-    // Parse encryption flags
+    // Parse encryption bitmask
     let encryption_flags = attrs
         .get("Encrypted")
         .and_then(|s| s.parse::<u8>().ok())
@@ -180,7 +195,7 @@ fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<Mdict
         })
         .unwrap_or_default();
 
-    // Extract metadata
+    // Extract user-visible metadata
     let title = attrs
         .get("Title")
         .cloned()
@@ -202,16 +217,23 @@ fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<Mdict
     })
 }
 
-/// Derive master key if passcode is provided.
-/// 
-/// In production, passcode should come from user input or config.
-/// Format: (registration_code_hex, email)
+/// Attempts to derive a master decryption key from available credentials.
+///
+/// # Priority Order
+/// 1. Explicit passcode (regcode + email) if provided
+/// 2. UUID-based key for MDict v3.0 files
+/// 3. `None` if no credentials available
+///
+/// # Parameters
+/// * `passcode` - Optional `(regcode_hex, user_email)` tuple
+/// * `uuid` - Optional UUID from v3.0 file header
+/// * `version` - MDict version enum
 fn try_derive_master_key(
     passcode: Option<(&str, &str)>,
     uuid: Option<&Vec<u8>>,
     version: MdictVersion,
 ) -> Result<Option<[u8; 16]>> {
-    // Priority 1: Explicit passcode
+    // Priority 1: Use explicit passcode if provided
     if let Some((reg_code_hex, user_email)) = passcode {
         info!("Deriving master decryption key from provided passcode");
         let reg_code = hex::decode(reg_code_hex)
@@ -228,15 +250,16 @@ fn try_derive_master_key(
         return Ok(Some(master_key));
     }
 
-    // Priority 2: UUID-based key (v3.0+ only)
+    // Priority 2: Derive from UUID for v3.0 files
     if version == MdictVersion::V3
-        && let Some(uuid_bytes) = uuid {
-            info!("Deriving master key from UUID (v3.0)");
-            let master_key = crypto::derive_key_from_uuid(uuid_bytes)?;
-            debug!("Master key derived from UUID");
-            return Ok(Some(master_key));
-        }
+        && let Some(uuid_bytes) = uuid
+    {
+        info!("Deriving master key from UUID (v3.0)");
+        let master_key = crypto::derive_key_from_uuid(uuid_bytes)?;
+        debug!("Master key derived from UUID");
+        return Ok(Some(master_key));
+    }
 
-    // No passcode or UUID provided, no key to derive.
+    // No credentials available
     Ok(None)
 }

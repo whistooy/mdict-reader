@@ -1,4 +1,13 @@
-//! Parser for MDict format versions 1.x and 2.x.
+//! Index parser for MDict format versions 1.x and 2.x.
+//!
+//! This module handles parsing of key and record block indexes for v1/v2 files.
+//! The format structure:
+//! 1. Key block info (encrypted if enabled, with checksum for v2)
+//! 2. Key block index (compressed, optionally encrypted)
+//! 3. Key blocks (actual data)
+//! 4. Record block info (unencrypted)
+//! 5. Record block index (unencrypted)
+//! 6. Record blocks (actual data)
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -17,17 +26,30 @@ use crate::mdict::{
 use super::common;
 use super::ParseResult;
 
-/// Main parser for v1/v2 files.
+/// Parses the complete index structure for v1/v2 MDict files.
+///
+/// This is the entry point for v1/v2 index parsing. It sequentially processes:
+/// 1. Key block metadata (locations, sizes, entry counts)
+/// 2. Record block metadata (locations, sizes)
+///
+/// # Returns
+/// A tuple containing:
+/// - `Vec<BlockMeta>`: Key block metadata
+/// - `Vec<BlockMeta>`: Record block metadata
+/// - `u64`: Total decompressed size of all record blocks
+/// - `u64`: Total number of dictionary entries
 pub fn parse(
     file: &mut File,
     header: &MdictHeader,
 ) -> Result<ParseResult> {
+    // Parse key block index
     let (key_blocks, num_entries) = parse_block_info(file, header, BlockType::Key)?;
 
-    // Skip to record section
+    // Skip past all key block data to reach record section
     let total_key_blocks_size: u64 = key_blocks.iter().map(|b| b.compressed_size).sum();
     file.seek(SeekFrom::Current(total_key_blocks_size as i64))?;
 
+    // Parse record block index
     let (record_blocks, _) = parse_block_info(file, header, BlockType::Record)?;
 
     let total_record_decomp_size: u64 = record_blocks.iter().map(|b| b.decompressed_size).sum();
@@ -41,7 +63,21 @@ pub fn parse(
     Ok((key_blocks, record_blocks, total_record_decomp_size, num_entries))
 }
 
-/// Generic parser for v1/v2 block metadata (key and record).
+/// Parses block metadata for either key or record blocks.
+///
+/// This generic function handles both key and record block parsing by:
+/// 1. Reading and decrypting the index header
+/// 2. Decompressing the index data (key blocks only)
+/// 3. Extracting individual block metadata from the index
+/// 4. Validating counts against expected values
+///
+/// # Parameters
+/// - `file`: File handle positioned at the start of the block info section
+/// - `header`: MDict header with version and encryption settings
+/// - `block_type`: Whether parsing key or record blocks
+///
+/// # Returns
+/// A tuple of (block metadata vector, total entry count)
 fn parse_block_info<R: Seek + Read>(
     file: &mut R,
     header: &MdictHeader,
@@ -49,17 +85,20 @@ fn parse_block_info<R: Seek + Read>(
 ) -> Result<(Vec<BlockMeta>, u64)> {
     info!("Parsing {} block info section", block_type);
 
+    // Read and decompress the appropriate index
     let (index_data, num_blocks, num_entries) = if block_type == BlockType::Key {
         parse_key_block_index(file, header)?
     } else {
         parse_record_block_index(file, header)?
     };
 
+    // Extract individual block metadata from the decompressed index
     info!("Extracting block boundaries from {} index", block_type);
     let initial_file_offset = file.stream_position()?;
     let (blocks, total_entries) =
         extract_block_metas(&index_data, header, block_type, initial_file_offset)?;
 
+    // Validate block count matches the index header
     if blocks.len() as u64 != num_blocks {
         return Err(MdictError::CountMismatch {
             item_type: format!("{} blocks in index", block_type),
@@ -68,6 +107,7 @@ fn parse_block_info<R: Seek + Read>(
         });
     }
 
+    // Validate entry count for key blocks
     if block_type == BlockType::Key && total_entries != num_entries {
         return Err(MdictError::CountMismatch {
             item_type: "key entries in index".to_string(),
@@ -80,7 +120,14 @@ fn parse_block_info<R: Seek + Read>(
     Ok((blocks, num_entries))
 }
 
-/// Extracts block metadata from the decompressed index data.
+/// Extracts individual block metadata entries from decompressed index data.
+///
+/// Iterates through the index buffer, reading metadata for each block:
+/// - For key blocks: entry count, first key, last key, sizes
+/// - For record blocks: only sizes
+///
+/// # Returns
+/// A tuple of (block metadata vector, total entry count across all blocks)
 fn extract_block_metas(
     index_data: &[u8],
     header: &MdictHeader,
@@ -93,16 +140,20 @@ fn extract_block_metas(
     let mut file_offset = initial_file_offset;
     let mut decompressed_offset: u64 = 0;
 
+    // Process each block's metadata entry
     while !reader.is_empty() {
+        // Key blocks include entry count and key range
         if block_type == BlockType::Key {
             let num_entries_in_block =
                 utils::read_number(&mut reader, header.version.number_width())?;
             total_entries += num_entries_in_block;
-            // Skip first and last key text
+            
+            // Skip first and last key texts (boundary keys used for range queries, not needed for sequential access)
             common::skip_text(&mut reader, header)?;
             common::skip_text(&mut reader, header)?;
         }
 
+        // Read block size information (present for both key and record blocks)
         let compressed_size = utils::read_number(&mut reader, header.version.number_width())?;
         let decompressed_size = utils::read_number(&mut reader, header.version.number_width())?;
 
@@ -112,6 +163,8 @@ fn extract_block_metas(
             file_offset,
             decompressed_offset,
         });
+        
+        // Advance offsets for next block
         file_offset += compressed_size;
         decompressed_offset += decompressed_size;
     }
@@ -120,19 +173,28 @@ fn extract_block_metas(
 }
 
 
-/// Parses the key block index header and data.
+/// Parses the key block index header and decompresses the index data.
+///
+/// Key block index structure:
+/// - Info block (encrypted if flag set, checksummed in v2)
+/// - Compressed index data (encrypted in v2 if flag set)
+///
+/// # Returns
+/// A tuple of (decompressed index data, block count, entry count)
 fn parse_key_block_index<R: Seek + Read>(
     file: &mut R,
     header: &MdictHeader,
 ) -> Result<(Vec<u8>, u64, u64)> {
+    // Read the info block (fixed size based on version)
     let info_size = match header.version {
-        MdictVersion::V1 => 16, // 4 fields * 4 bytes
-        MdictVersion::V2 => 40, // 5 fields * 8 bytes
+        MdictVersion::V1 => 16, // 4 fields × 4 bytes each
+        MdictVersion::V2 => 40, // 5 fields × 8 bytes each
         MdictVersion::V3 => unreachable!(),
     };
     let mut info_bytes = vec![0u8; info_size];
     file.read_exact(&mut info_bytes)?;
 
+    // Decrypt info block if encryption is enabled
     if header.encryption_flags.encrypt_record_blocks {
         if let Some(ref key) = header.master_key {
             debug!("Decrypting key block info (Salsa20)");
@@ -142,6 +204,7 @@ fn parse_key_block_index<R: Seek + Read>(
         }
     }
 
+    // V2 includes an Adler32 checksum after the info block
     if header.version == MdictVersion::V2 {
         let checksum_expected = file.read_u32::<BigEndian>()?;
         let checksum_actual = adler32_slice(&info_bytes);
@@ -153,6 +216,7 @@ fn parse_key_block_index<R: Seek + Read>(
         }
     }
 
+    // Parse the info block fields
     let mut reader = info_bytes.as_slice();
     let num_blocks = utils::read_number(&mut reader, header.version.number_width())?;
     let num_entries = utils::read_number(&mut reader, header.version.number_width())?;
@@ -169,6 +233,7 @@ fn parse_key_block_index<R: Seek + Read>(
         num_blocks, num_entries, key_index_comp_len
     );
 
+    // Read and decompress the key index data
     let mut compressed = vec![0u8; key_index_comp_len as usize];
     file.read_exact(&mut compressed)?;
     let index_data = decompress_key_index(&compressed, key_index_decomp_len, header)?;
@@ -176,7 +241,15 @@ fn parse_key_block_index<R: Seek + Read>(
     Ok((index_data, num_blocks, num_entries))
 }
 
-/// Parses the record block index header and data.
+/// Parses the record block index header and reads the index data.
+///
+/// Record block index is simpler than key block:
+/// - No encryption
+/// - No compression
+/// - No checksums
+///
+/// # Returns
+/// A tuple of (index data, block count, entry count)
 fn parse_record_block_index<R: Seek + Read>(
     file: &mut R,
     header: &MdictHeader,
@@ -191,18 +264,33 @@ fn parse_record_block_index<R: Seek + Read>(
     Ok((index_data_mut, num_blocks, num_entries))
 }
 
-/// Decompress the raw key index block.
+/// Decompresses and validates the key index block.
+///
+/// For v2:
+/// - Decrypts if encryption flag is set
+/// - Decompresses using specified algorithm
+/// - Verifies Adler32 checksum
+///
+/// For v1:
+/// - Returns data as-is (uncompressed)
+///
+/// # Parameters
+/// - `compressed`: Raw compressed index data
+/// - `decomp_len`: Expected decompressed length (None for v1)
+/// - `header`: MDict header with encryption settings
 fn decompress_key_index(
     compressed: &[u8],
     decomp_len: Option<u64>,
     header: &MdictHeader,
 ) -> Result<Vec<u8>> {
+    // V2 uses compression with checksum verification
     if let Some(decomp_len) = decomp_len {
         debug!(
             "Processing v2.x key index (compressed: {} bytes, decompressed: {} bytes)",
             compressed.len(), decomp_len
         );
         
+        // Decrypt if key index encryption is enabled
         let payload = if header.encryption_flags.encrypt_key_index {
             debug!("Decrypting key index (fast decrypt with checksum-derived key)");
             let key = crypto::derive_key_for_v2_index(compressed);
@@ -213,11 +301,13 @@ fn decompress_key_index(
             compressed[8..].to_vec()
         };
 
+        // Read compression type from header and decompress
         let compression_type = CompressionType::try_from(LittleEndian::read_u32(&compressed[0..4]) as u8)?;
         debug!("Decompressing key index using {:?}", compression_type);
         let decompressed =
             compression::decompress_payload(&payload, compression_type, decomp_len)?;
 
+        // Verify checksum to ensure data integrity
         let checksum_expected = BigEndian::read_u32(&compressed[4..8]);
         let checksum_actual = adler32_slice(decompressed.as_slice());
         if checksum_actual != checksum_expected {
@@ -229,6 +319,7 @@ fn decompress_key_index(
         debug!("Key index parsed successfully: {} bytes", decompressed.len());
         Ok(decompressed)
     } else {
+        // V1 does not compress the key index
         debug!("Processing v1.x key index ({} bytes, uncompressed)", compressed.len());
         Ok(compressed.to_vec())
     }

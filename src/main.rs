@@ -7,12 +7,17 @@ use std::process;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mdict_reader::{FileType, Mdict, MdictError, MdictReader};
 
-// --- Constants ---
-/// The name of the subdirectory for MDD resources, used to keep outputs tidy.
+// ==================== Constants ====================
+
+/// Subdirectory name for extracted MDD resources.
 const MDD_RESOURCES_SUBDIR: &str = "resources";
 
-// --- CLI Argument Parsing Setup ---
-/// A command-line tool to inspect and extract MDict (.mdx/.mdd) dictionary files.
+// ==================== CLI Configuration ====================
+
+/// Command-line tool for inspecting and extracting MDict dictionary files.
+///
+/// Supports both MDX (dictionary definitions) and MDD (resource data) files
+/// across all MDict format versions (1.x, 2.x, 3.x).
 #[derive(Parser, Debug)]
 #[command(name = "mdict-tool", version, about, author)]
 struct Cli {
@@ -139,9 +144,10 @@ fn run_extract(args: ExtractArgs) {
 
     // 2. Create the top-level output directory if specified.
     if let Some(output_dir) = &args.output
-        && fs::create_dir_all(output_dir).is_err() {
-            eprint_and_exit(format!("Could not create output directory: {}", output_dir.display()));
-        }
+        && fs::create_dir_all(output_dir).is_err()
+    {
+        eprint_and_exit(format!("Could not create output directory: {}", output_dir.display()));
+    }
     
     // 3. Execute all tasks in a single, unified loop.
     for (task, path) in tasks {
@@ -176,7 +182,7 @@ fn run_extract(args: ExtractArgs) {
     }
 }
 
-/// Extracts content from an MDX reader.
+/// Extracts text content from an MDX (dictionary) file.
 fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, format: Format, output_dir: Option<&Path>) -> Result<(), MdictError> {
     println!("\n-> Extracting MDX content from {}...", path.display());
     
@@ -229,7 +235,7 @@ fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, form
     Ok(())
 }
 
-/// Extracts resources from an MDD reader into a specific target directory.
+/// Extracts binary resources from an MDD (resource data) file.
 fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, target_dir: &Path) -> Result<(), MdictError> {
     println!("\n-> Extracting MDD resources from {}...", path.display());
     
@@ -262,7 +268,7 @@ fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, ta
     Ok(())
 }
 
-// --- General Helper Functions ---
+// ==================== Helper Functions ====================
 fn open_mdict_or_exit(file: &Path, args: &SharedArgs) -> Mdict {
     let passcode_ref = args.passcode.as_deref()
         .map(|s| s.split_once(',')
@@ -273,6 +279,17 @@ fn open_mdict_or_exit(file: &Path, args: &SharedArgs) -> Mdict {
     }
 }
 
+/// Finds all companion MDD files for a given MDX file.
+///
+/// Searches for related resource files in the same directory:
+/// - `basename.mdd` (primary resources)
+/// - `basename.1.mdd`, `basename.2.mdd`, ... (additional resource files)
+///
+/// # Arguments
+/// * `mdx_file` - Path to the main .mdx dictionary file
+///
+/// # Returns
+/// A vector of paths to all found companion .mdd files, in order
 fn find_companion_mdds(mdx_file: &Path) -> Vec<PathBuf> {
     let mut companions = Vec::new();
     let base_name = mdx_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
@@ -291,6 +308,14 @@ fn find_companion_mdds(mdx_file: &Path) -> Vec<PathBuf> {
     companions
 }
 
+/// Determines the base path for output files.
+///
+/// # Parameters
+/// * `source_path` - Path to the source file being extracted
+/// * `output_dir` - Optional custom output directory
+///
+/// # Returns
+/// A path without extension for use with `.with_extension()`
 fn get_output_base_path(source_path: &Path, output_dir: Option<&Path>) -> PathBuf {
     let file_stem = source_path.file_stem().unwrap_or_default();
     match output_dir {
@@ -303,6 +328,7 @@ fn get_output_base_path(source_path: &Path, output_dir: Option<&Path>) -> PathBu
     }
 }
 
+/// Prints common metadata shared by MDX and MDD files.
 fn print_common_info<T: FileType>(reader: &MdictReader<T>) {
     println!("\n{:=<60}", "");
     println!("✓ SUCCESS - Metadata loaded");
@@ -321,7 +347,12 @@ fn print_common_info<T: FileType>(reader: &MdictReader<T>) {
     println!("  Record blocks:  {}", reader.num_record_blocks());
 }
 
-fn print_samples<T: FileType>(reader: &MdictReader<T>, description: &str, print_record_details: impl Fn(&T::Record)) {
+/// Prints sample entries from the dictionary.
+fn print_samples<T: FileType>(
+    reader: &MdictReader<T>,
+    description: &str,
+    print_record_details: impl Fn(&T::Record),
+) {
     let desired_sample_count = 10;
     println!("\nSample Entries & {} (showing first up to {}):", description, desired_sample_count);
     for (i, entry_result) in reader.iter_records().take(desired_sample_count).enumerate() {
@@ -336,12 +367,14 @@ fn print_samples<T: FileType>(reader: &MdictReader<T>, description: &str, print_
     println!("\nTotal entries in dictionary: {}", reader.num_entries());
 }
 
+/// Prints the application banner with file information.
 fn print_banner(file: &Path, has_passcode: bool) {
     println!("\n{:=<60}\nMDict Tool\n{:=<60}", "", "");
     println!("File: {}", file.display());
     if has_passcode { println!("Passcode: provided"); }
 }
 
+/// Prints an error message and exits with status code 1.
 fn eprint_and_exit<T: Display>(msg: T) -> ! {
     eprintln!("\n{:=<60}\n✗ ERROR\n{:=<60}", "", "");
     eprintln!("{}", msg);
@@ -349,6 +382,13 @@ fn eprint_and_exit<T: Display>(msg: T) -> ! {
     process::exit(1);
 }
 
+/// Creates a buffered file writer for efficient output.
+///
+/// # Parameters
+/// * `path` - Destination file path
+///
+/// # Returns
+/// A buffered writer that reduces syscall overhead for frequent writes
 fn create_writer(path: &Path) -> Result<BufWriter<File>, MdictError> {
     File::create(path)
         .map(BufWriter::new)

@@ -1,21 +1,29 @@
-//! Data structures representing MDict format components
+//! Core data structures for MDict format components.
+//!
+//! This module defines the fundamental types used throughout the library:
+//! - File metadata and headers
+//! - Block and entry information
+//! - Version and type enumerations
 
 use encoding_rs::Encoding;
 use super::error::{MdictError, Result};
 
-/// Encryption flags from MDict header.
+/// Encryption flags parsed from the MDict header.
 ///
-/// Bit 0x01: Record blocks are encrypted
-/// Bit 0x02: Key index is encrypted
+/// The MDict format uses a bitmask to indicate which parts of the file are encrypted:
+/// - Bit 0x01: Record data blocks are encrypted
+/// - Bit 0x02: Key index blocks are encrypted
 #[derive(Debug, Default)]
 pub struct EncryptionFlags {
     pub encrypt_record_blocks: bool,
     pub encrypt_key_index: bool,
 }
 
-/// Parsed MDict file header.
+/// Complete parsed header from an MDict file.
 ///
-/// Contains version, encoding, encryption settings, and metadata.
+/// This structure contains all metadata necessary for parsing the file body,
+/// including version information, text encoding, encryption keys, and user-visible
+/// metadata like title and description.
 #[derive(Debug)]
 pub struct MdictHeader {
     pub version: MdictVersion,
@@ -25,12 +33,17 @@ pub struct MdictHeader {
     pub title: String,
     pub description: Option<String>,
     pub stylesheet: Option<String>,
-    /// Master decryption key (derived from passcode if encrypted, None otherwise)
+    /// Master decryption key derived from passcode or UUID.
+    /// `None` if the file is not encrypted or no credentials were provided.
     pub master_key: Option<[u8; 16]>,
-    pub uuid: Option<Vec<u8>>, // UUID for v3.0 key derivation
+    /// UUID used for key derivation in MDict v3.0 files.
+    pub uuid: Option<Vec<u8>>,
 }
 
-/// Information needed to locate and extract a specific record
+/// Location information for a specific record within a decompressed block.
+///
+/// This structure enables efficient random access to dictionary entries
+/// without re-parsing entire blocks.
 #[derive(Debug, Clone)]
 pub struct RecordInfo {
     pub block_index: usize,
@@ -38,24 +51,30 @@ pub struct RecordInfo {
     pub size: u64,
 }
 
-/// A dictionary key entry with its record ID.
+/// A single key entry from the dictionary index.
+///
+/// Associates a search key (word/term) with its record ID, which points to
+/// the actual definition data in the record blocks.
 #[derive(Debug)]
 pub struct KeyEntry {
     pub id: u64,
     pub text: String,
 }
 
-/// Metadata for a single data block.
+/// Metadata describing a single compressed data block.
+///
+/// MDict files are divided into blocks for efficient random access and
+/// memory management. Each block can be independently decompressed.
 #[derive(Debug, Clone, Copy)]
 pub struct BlockMeta {
-    /// Size of the compressed data for this block (in bytes).
+    /// Size of the compressed block data as stored in the file (bytes).
     pub compressed_size: u64,
-    /// Size of the decompressed data for this block (in bytes).
+    /// Size of the block after decompression (bytes).
     pub decompressed_size: u64,
-    /// Starting offset of this block's compressed data in the file.
+    /// Absolute byte offset where this block's compressed data begins in the file.
     pub file_offset: u64,
-    /// Starting offset of this block in the virtual concatenated decompressed stream.
-    /// (0 for the first block; used for random access via binary search on record_id.)
+    /// Offset of this block in the virtual concatenated decompressed stream.
+    /// Used for binary search when locating records by ID. The first block has offset 0.
     pub decompressed_offset: u64,
 }
 
@@ -67,7 +86,10 @@ pub enum MdictVersion {
 }
 
 impl MdictVersion {
-    /// Get the width (in bytes) for numbers in this format version.
+    /// Returns the byte width for numeric fields in this MDict version.
+    ///
+    /// - V1: 4 bytes (u32)
+    /// - V2/V3: 8 bytes (u64)
     pub fn number_width(&self) -> usize {
         match self {
             MdictVersion::V1 => 4,
@@ -75,7 +97,10 @@ impl MdictVersion {
         }
     }
 
-    /// Get the width (in bytes) for small numbers (text length prefixes) in this format version.
+    /// Returns the byte width for text length prefixes in this MDict version.
+    ///
+    /// - V1: 1 byte (u8)
+    /// - V2/V3: 2 bytes (u16)
     pub fn small_number_width(&self) -> usize {
         match self {
             MdictVersion::V1 => 1,
@@ -99,7 +124,9 @@ impl TryFrom<f32> for MdictVersion {
     }
 }
 
-/// Block type markers used in MDict v3.0
+/// Block type identifiers used in MDict v3.0 files.
+///
+/// V3 files use explicit 32-bit type markers to identify different sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum V3BlockType {
     RecordData = 0x01000000,

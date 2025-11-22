@@ -1,18 +1,15 @@
-//! # Block Content Parsing & Decoding
+//! Block content parsing, decoding, and validation.
 //!
-//! This module is responsible for taking a raw, on-disk block and turning it
-//! into structured data (key entries or a record definition). It sits between
-//! the high-level `reader` (which handles I/O) and the low-level `codec`
-//! (which handles pure data transformation).
+//! This module bridges the gap between raw file data and structured records:
+//! - Decrypts and decompresses data blocks
+//! - Validates block checksums
+//! - Parses key entries from index blocks
+//! - Extracts individual records from decompressed data
 //!
-//! ## Responsibilities
-//! 1.  **Parse Block Header**: Reads the 8-byte header to determine compression,
-//!     encryption, and checksum information.
-//! 2.  **Decode Payload**: Orchestrates decryption and decompression by calling
-//!     the `codec` module.
-//! 3.  **Verify Checksum**: Validates the block's integrity.
-//! 4.  **Parse Entries**: Parses the decompressed data into `KeyEntry` structs.
-//! 5.  **Extract Record**: Extracts a record definition from a decompressed block.
+//! # Architecture Position
+//! ```text
+//! Reader (I/O) → Content (this module) → Codec (crypto/compression)
+//! ```
 
 use std::cmp::min;
 use adler2::adler32_slice;
@@ -26,7 +23,25 @@ use crate::mdict::types::filetypes::FileType;
 use crate::mdict::types::models::*;
 use crate::mdict::utils;
 
-/// Decodes a raw, compressed/encrypted block payload.
+/// Decodes a raw block: decrypts, decompresses, and validates.
+///
+/// # Block Header Format (8 bytes)
+/// ```text
+/// [0-3] Compression & encryption info (little-endian u32)
+///       - Bits 0-3: Compression type
+///       - Bits 4-7: Encryption type
+///       - Bits 8-15: Encryption size
+/// [4-7] Adler32 checksum (big-endian u32)
+/// ```
+///
+/// # Parameters
+/// * `raw_block` - Complete block including 8-byte header
+/// * `expected_decompressed_size` - Expected size after decompression
+/// * `master_key` - Optional decryption key (None for unencrypted files)
+/// * `version` - MDict version (affects checksum timing)
+///
+/// # Returns
+/// Fully decoded block data ready for parsing.
 pub fn decode_block(
     raw_block: &mut [u8],
     expected_decompressed_size: u64,
@@ -37,7 +52,7 @@ pub fn decode_block(
         return Err(MdictError::InvalidFormat("Block too short (minimum 8 bytes required)".to_string()));
     }
 
-    // Parse block header
+    // Step 1: Parse 8-byte block header
     let info = LittleEndian::read_u32(&raw_block[0..4]);
     let compression_type = CompressionType::try_from((info & 0xF) as u8)?;
     let encryption_type = EncryptionType::try_from(((info >> 4) & 0xF) as u8)?;
@@ -49,19 +64,21 @@ pub fn decode_block(
         compression_type, encryption_type, expected_decompressed_size
     );
 
+    // Step 2: Determine decryption key
     let decryption_key: [u8; 16] = match master_key {
         Some(key) => {
-            trace!("Using master key for decryption");
+            trace!("Using master key from file header");
             *key
         }
         None => {
-            trace!("Deriving decryption key from block checksum");
+            trace!("Deriving ephemeral key from block checksum");
             let mut hasher = Ripemd128::new();
             hasher.update(&raw_block[4..8]);
             hasher.finalize().into()
         }
     };
 
+    // Step 3: Decrypt payload (skip 8-byte header)
     let payload = &mut raw_block[8..];
 
     let decrypt_len = min(encryption_size, payload.len());
@@ -71,6 +88,7 @@ pub fn decode_block(
         &decryption_key,
     );
 
+    // Step 4: Validate checksum (v3 before decompression, v1/v2 after)
     if version == MdictVersion::V3 {
         let checksum_actual = adler32_slice(payload);
         trace!("V3 block checksum on decrypted data: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
@@ -82,6 +100,7 @@ pub fn decode_block(
         }
     }
 
+    // Step 5: Decompress payload
     let decompressed = compression::decompress_payload(
         payload,
         compression_type,
@@ -102,8 +121,17 @@ pub fn decode_block(
     Ok(decompressed)
 }
 
-/// Parses key entries from a decompressed data block.
+/// Parses key entries from a decompressed key block.
+///
+/// Each entry consists of:
+/// - Record ID (4 or 8 bytes depending on version)
+/// - Null-terminated key text
+///
+/// # Parameters
+/// * `data` - Decompressed key block data
+/// * `header` - File header with encoding and version info
 pub fn parse_key_entries(data: &[u8], header: &MdictHeader) -> Result<Vec<KeyEntry>> {
+    trace!("Parsing key entries from {} byte block", data.len());
     let mut entries = Vec::new();
     let mut reader = data;
     
@@ -113,15 +141,31 @@ pub fn parse_key_entries(data: &[u8], header: &MdictHeader) -> Result<Vec<KeyEnt
         entries.push(KeyEntry { id: record_id, text });
     }
     
+    trace!("Parsed {} key entries from block", entries.len());
     Ok(entries)
 }
 
-/// Extracts and processes a record from a pre-loaded, decompressed block.
+/// Extracts and decodes a single record from a decompressed block.
+///
+/// This is a zero-copy operation that slices the block data and processes
+/// it according to the file type (MDX → String, MDD → Vec<u8>).
+///
+/// # Parameters
+/// * `block_bytes` - Complete decompressed block
+/// * `info` - Record location within the block
+/// * `header` - File header with encoding information
 pub fn parse_record<T: FileType>(
     block_bytes: &[u8],
     info: &RecordInfo,
     header: &MdictHeader,
 ) -> Result<T::Record> {
+    trace!(
+        "Extracting {} record: offset={}, size={}",
+        T::DEBUG_NAME,
+        info.offset_in_block,
+        info.size
+    );
+    
     let start = info.offset_in_block as usize;
     let end = start + info.size as usize;
     if end > block_bytes.len() {
@@ -135,27 +179,42 @@ pub fn parse_record<T: FileType>(
     T::process_record(record_slice, header)
 }
 
-/// Reads a null-terminated string from a byte slice and advances the slice.
+/// Reads and decodes a null-terminated string, advancing the reader.
+///
+/// Handles both single-byte (UTF-8, GB18030) and double-byte (UTF-16) encodings.
+///
+/// # Parameters
+/// * `reader` - Mutable reference to byte slice (will be advanced past the string and terminator)
+/// * `encoding` - Text encoding for decoding
+///
+/// # Returns
+/// The decoded string without the null terminator
 fn read_null_terminated_string(
     reader: &mut &[u8],
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<String> {
     let width = utils::unit_width(encoding);
+    
+    // Find null terminator position (depends on encoding width)
     let end_pos = if width == 2 {
+        // UTF-16: look for double-null (0x0000)
         reader
             .chunks_exact(2)
             .position(|chunk| chunk == [0, 0])
             .map(|chunk_index| chunk_index * 2)
     } else {
+        // Single-byte encodings: look for single null
         reader
             .iter()
             .position(|&byte| byte == 0)
     }
     .ok_or_else(|| MdictError::InvalidFormat("Missing null terminator in string".to_string()))?;
     
+    // Decode the text portion (excluding terminator)
     let text_bytes = &reader[..end_pos];
     let (decoded, _, _) = encoding.decode(text_bytes);
     
+    // Advance reader past text and terminator
     *reader = &reader[end_pos + width..];
     
     Ok(decoded.into_owned())
