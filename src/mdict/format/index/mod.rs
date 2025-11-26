@@ -6,7 +6,7 @@
 
 use std::fs::File;
 use crate::mdict::types::error::Result;
-use crate::mdict::types::models::{BlockMeta, MdictHeader, MdictVersion};
+use crate::mdict::types::models::{BlockMeta, MdictVersion, EncryptionFlags, MdictEncoding};
 
 pub mod common;
 pub mod v1v2;
@@ -28,10 +28,13 @@ pub type ParseResult = (Vec<BlockMeta>, Vec<BlockMeta>, u64, u64);
 /// size of all record blocks and the total number of entries.
 pub fn parse(
     file: &mut File,
-    header: &MdictHeader,
+    version: MdictVersion,
+    encoding: MdictEncoding,
+    encryption_flags: EncryptionFlags,
+    master_key: Option<&[u8; 16]>,
 ) -> Result<ParseResult> {
-    match header.version {
-        MdictVersion::V3 => v3::parse(file, header),
-        MdictVersion::V1 | MdictVersion::V2 => v1v2::parse(file, header),
+    match version {
+        MdictVersion::V3 => v3::parse(file, version, encoding, master_key),
+        MdictVersion::V1 | MdictVersion::V2 => v1v2::parse(file, version, encoding, encryption_flags, master_key),
     }
 }

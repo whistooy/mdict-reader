@@ -1,6 +1,5 @@
 //! Specialization logic for MDict file types (.mdx vs .mdd).
 
-use super::models::MdictHeader;
 use super::error::Result;
 use encoding_rs::{Encoding, UTF_16LE};
 
@@ -21,7 +20,7 @@ pub trait FileType {
     const ENCODING_OVERRIDE: Option<&'static Encoding>;
 
     /// Processes raw record bytes into the final record type.
-    fn process_record(bytes: &[u8], header: &MdictHeader) -> Result<Self::Record>;
+    fn process_record(bytes: &[u8], encoding: &'static Encoding) -> Result<Self::Record>;
 }
 
 /// Zero-cost marker struct for MDX files.
@@ -33,9 +32,9 @@ impl FileType for Mdx {
     type Record = String;
     const ENCODING_OVERRIDE: Option<&'static Encoding> = None;
 
-    fn process_record(bytes: &[u8], header: &MdictHeader) -> Result<Self::Record> {
-        // Decode using the encoding information from the provided header.
-        let (text, _, _) = header.encoding.decode(bytes);
+    fn process_record(bytes: &[u8], encoding: &'static Encoding) -> Result<Self::Record> {
+        // Decode using the provided encoding.
+        let (text, _, _) = encoding.decode(bytes);
 
         // Strip null terminators
         let stripped = text.trim_end_matches('\0');
@@ -53,7 +52,7 @@ impl FileType for Mdd {
     type Record = Vec<u8>;
     const ENCODING_OVERRIDE: Option<&'static Encoding> = Some(UTF_16LE);
 
-    fn process_record(bytes: &[u8], _header: &MdictHeader) -> Result<Self::Record> {
+    fn process_record(bytes: &[u8], _encoding: &'static Encoding) -> Result<Self::Record> {
         // MDD bytes are the final record.
         Ok(bytes.to_vec())
     }

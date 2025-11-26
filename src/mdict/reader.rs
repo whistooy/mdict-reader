@@ -10,7 +10,7 @@ use super::format;
 use super::iter::{KeysIterator, RecordIterator};
 use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
-use super::types::models::{BlockMeta, KeyEntry, MdictHeader, MdictVersion};
+use super::types::models::{BlockMeta, KeyEntry, MdictVersion, MdictMetadata, EncryptionFlags, MdictEncoding};
 
 /// The main reader for MDict dictionary files.
 ///
@@ -26,7 +26,15 @@ use super::types::models::{BlockMeta, KeyEntry, MdictHeader, MdictVersion};
 #[derive(Debug)]
 pub struct MdictReader<T: FileType> {
     file: Arc<Mutex<File>>,
-    pub header: MdictHeader,
+    
+    // Parsing-critical fields (stored directly for zero-lock access)
+    version: MdictVersion,
+    encoding: MdictEncoding,
+    encryption_flags: EncryptionFlags,
+    master_key: Option<[u8; 16]>,
+    
+    // Display metadata
+    metadata: MdictMetadata,
     
     key_blocks: Vec<BlockMeta>,
     record_blocks: Vec<BlockMeta>,
@@ -70,11 +78,11 @@ impl<T: FileType> MdictReader<T> {
 
         // Step 1: Parse file header and extract metadata
         debug!("Parsing file header");
-        let mut mdict_header = format::header::parse(&mut file, passcode)?;
+        let (version, mut encoding, encryption_flags, master_key, metadata) = format::header::parse(&mut file, passcode)?;
 
         // Step 2: Apply version-specific encoding rules
-        let original_encoding = mdict_header.encoding;
-        let final_encoding = if mdict_header.version == MdictVersion::V3 {
+        let original_encoding = encoding;
+        let final_encoding = if version == MdictVersion::V3 {
             // V3.0 always uses UTF-8 regardless of header or user settings
             encoding_rs::UTF_8
         } else {
@@ -84,7 +92,7 @@ impl<T: FileType> MdictReader<T> {
             // 3. Encoding from file header
             T::ENCODING_OVERRIDE
                 .or_else(|| user_encoding.map(super::utils::parse_encoding))
-                .unwrap_or(mdict_header.encoding)
+                .unwrap_or(encoding)
         };
         
         // Log encoding changes for clarity
@@ -93,7 +101,7 @@ impl<T: FileType> MdictReader<T> {
                 "Encoding override applied: header='{}' → final='{}' (reason: {})",
                 original_encoding.name(),
                 final_encoding.name(),
-                if mdict_header.version == MdictVersion::V3 {
+                if version == MdictVersion::V3 {
                     "V3.0 specification"
                 } else if T::ENCODING_OVERRIDE.is_some() {
                     "MDD file type requires UTF-16LE"
@@ -102,12 +110,12 @@ impl<T: FileType> MdictReader<T> {
                 }
             );
         }
-        mdict_header.encoding = final_encoding;
+        encoding = final_encoding;
 
         // Step 3: Parse index blocks (version-specific)
         debug!("Parsing block indexes");
         let (key_blocks, record_blocks, total_record_decomp_size, num_entries) =
-            format::index::parse(&mut file, &mdict_header)?;
+            format::index::parse(&mut file, version, encoding, encryption_flags, master_key.as_ref())?;
 
         info!(
             "{} file loaded: {} entries, {} key blocks, {} record blocks",
@@ -119,7 +127,11 @@ impl<T: FileType> MdictReader<T> {
 
         Ok(Self {
             file: Arc::new(Mutex::new(file)),
-            header: mdict_header,
+            version,
+            encoding,
+            encryption_flags,
+            master_key,
+            metadata,
             key_blocks,
             record_blocks,
             total_record_decomp_size,
@@ -132,19 +144,41 @@ impl<T: FileType> MdictReader<T> {
     pub fn num_key_blocks(&self) -> usize {
         self.key_blocks.len()
     }
-    
+
     /// Returns the total number of record blocks in the file.
     pub fn num_record_blocks(&self) -> usize {
         self.record_blocks.len()
     }
-    
+
     /// Returns the total number of dictionary entries.
     ///
     /// This is O(1) as the count is cached during index parsing.
     pub fn num_entries(&self) -> u64 {
         self.num_entries
     }
-    
+
+    /// Returns a reference to the display metadata.
+    ///
+    /// Provides access to user-visible information such as title, description, and engine version.
+    pub fn metadata(&self) -> &MdictMetadata {
+        &self.metadata
+    }
+
+    /// Returns the MDict version.
+    pub fn version(&self) -> MdictVersion {
+        self.version
+    }
+
+    /// Returns the text encoding used in this file.
+    pub fn encoding(&self) -> MdictEncoding {
+        self.encoding
+    }
+
+    /// Returns the encryption flags indicating which parts of the file are encrypted.
+    pub fn encryption_flags(&self) -> EncryptionFlags {
+        self.encryption_flags
+    }
+
     /// Returns an iterator over `(key, start, end)` tuples.
     ///
     /// This iterator decodes key blocks and resolves each entry to its byte range
@@ -181,7 +215,7 @@ impl<T: FileType> MdictReader<T> {
     pub fn iter_records(&self) -> RecordIterator<'_, T> {
         self.iter_keys().with_records()
     }
-    
+
     /// Locates and reads a single record by its byte range.
     ///
     /// Uses binary search on record blocks to efficiently find the containing block,
@@ -267,14 +301,14 @@ impl<T: FileType> MdictReader<T> {
     /// * `start` - Start position of the record within the block
     /// * `end` - End position of the record within the block (exclusive)
     pub fn parse_record(&self, block_bytes: &[u8], start: u64, end: u64) -> Result<T::Record> {
-        content::parse_record::<T>(block_bytes, start, end, &self.header)
+        content::parse_record::<T>(block_bytes, start, end, self.encoding)
     }
-    
+
     /// Reads and parses all key entries from a key block.
     pub(crate) fn read_key_block_entries(&self, block_meta: BlockMeta) -> Result<Vec<KeyEntry>> {
         trace!("Reading key block at file offset {}", block_meta.file_offset);
         let decompressed = self.read_and_decode_block(block_meta)?;
-        content::parse_key_entries(&decompressed, &self.header)
+        content::parse_key_entries(&decompressed, self.version, self.encoding)
     }
 
     /// Reads, decrypts, and decompresses a block from the file.
@@ -304,8 +338,8 @@ impl<T: FileType> MdictReader<T> {
         content::decode_block(
             &mut raw_block,
             block_meta.decompressed_size,
-            self.header.master_key.as_ref(),
-            self.header.version,
+            self.master_key.as_ref(),
+            self.version,
         )
     }
 

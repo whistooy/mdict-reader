@@ -129,15 +129,20 @@ pub fn decode_block(
 ///
 /// # Parameters
 /// * `data` - Decompressed key block data
-/// * `header` - File header with encoding and version info
-pub fn parse_key_entries(data: &[u8], header: &MdictHeader) -> Result<Vec<KeyEntry>> {
+/// * `version` - MDict version for field widths
+/// * `encoding` - Text encoding for key strings
+pub fn parse_key_entries(
+    data: &[u8],
+    version: MdictVersion,
+    encoding: &'static encoding_rs::Encoding,
+) -> Result<Vec<KeyEntry>> {
     trace!("Parsing key entries from {} byte block", data.len());
     let mut entries = Vec::new();
     let mut reader = data;
     
     while !reader.is_empty() {
-        let record_id = utils::read_number(&mut reader, header.version.number_width())?;
-        let text = read_null_terminated_string(&mut reader, header.encoding)?;
+        let record_id = utils::read_number(&mut reader, version.number_width())?;
+        let text = read_null_terminated_string(&mut reader, encoding)?;
         entries.push(KeyEntry { id: record_id, text });
     }
     
@@ -154,12 +159,12 @@ pub fn parse_key_entries(data: &[u8], header: &MdictHeader) -> Result<Vec<KeyEnt
 /// * `block_bytes` - Complete decompressed block
 /// * `start` - Start position of the record within the block
 /// * `end` - End position of the record within the block (exclusive)
-/// * `header` - File header with encoding information
+/// * `encoding` - Text encoding for record data
 pub fn parse_record<T: FileType>(
     block_bytes: &[u8],
     start: u64,
     end: u64,
-    header: &MdictHeader,
+    encoding: &'static encoding_rs::Encoding,
 ) -> Result<T::Record> {
     trace!(
         "Extracting {} record: range=[{}..{}], size={}",
@@ -180,7 +185,7 @@ pub fn parse_record<T: FileType>(
     }
     
     let record_slice = &block_bytes[start..end];
-    T::process_record(record_slice, header)
+    T::process_record(record_slice, encoding)
 }
 
 /// Reads and decodes a null-terminated string, advancing the reader.

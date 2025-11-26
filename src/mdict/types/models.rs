@@ -8,35 +8,33 @@
 use encoding_rs::Encoding;
 use super::error::{MdictError, Result};
 
+/// Type alias for the text encoding used in MDict files.
+///
+/// This is a static reference to an encoding from the `encoding_rs` crate.
+pub type MdictEncoding = &'static Encoding;
+
 /// Encryption flags parsed from the MDict header.
 ///
 /// The MDict format uses a bitmask to indicate which parts of the file are encrypted:
 /// - Bit 0x01: Record data blocks are encrypted
 /// - Bit 0x02: Key index blocks are encrypted
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct EncryptionFlags {
     pub encrypt_record_blocks: bool,
     pub encrypt_key_index: bool,
 }
 
-/// Complete parsed header from an MDict file.
+/// Display-only metadata from MDict file header.
 ///
-/// This structure contains all metadata necessary for parsing the file body,
-/// including version information, text encoding, encryption keys, and user-visible
-/// metadata like title and description.
+/// This structure contains user-visible information that doesn't affect
+/// parsing operations. Separated from parsing-critical fields for better
+/// performance and clearer API.
 #[derive(Debug)]
-pub struct MdictHeader {
-    pub version: MdictVersion,
-    pub engine_version: String,
-    pub encryption_flags: EncryptionFlags,
-    pub encoding: &'static Encoding,
+pub struct MdictMetadata {
     pub title: String,
+    pub engine_version: String,
     pub description: Option<String>,
-    pub stylesheet: Option<String>,
-    /// Master decryption key derived from passcode or UUID.
-    /// `None` if the file is not encrypted or no credentials were provided.
-    pub master_key: Option<[u8; 16]>,
-    /// UUID used for key derivation in MDict v3.0 files.
+    pub stylesheet_raw: Option<String>,
     pub uuid: Option<Vec<u8>>,
 }
 

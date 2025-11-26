@@ -224,7 +224,7 @@ fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, form
 
     println!("   SUCCESS: Entries written to {}", out_path.display());
 
-    if let Some(stylesheet) = &reader.header.stylesheet {
+    if let Some(stylesheet) = &reader.metadata().stylesheet_raw {
         let style_path = output_base.with_file_name(format!("{}_style.css", output_base.file_stem().unwrap_or_default().to_string_lossy()));
         if fs::write(&style_path, stylesheet).is_err() {
             eprintln!("   WARN: Could not write stylesheet to {}", style_path.display());
@@ -334,11 +334,13 @@ fn print_common_info<T: FileType>(reader: &MdictReader<T>) {
     println!("✓ SUCCESS - Metadata loaded");
     println!("{:=<60}", "");
     println!("\nDictionary Information:");
-    println!("  Title:       {}", reader.header.title);
-    println!("  Version:     {}", reader.header.engine_version);
-    println!("  Encoding:    {}", reader.header.encoding.name());
-    println!("  Encrypted:   blocks={}, index={}", reader.header.encryption_flags.encrypt_record_blocks, reader.header.encryption_flags.encrypt_key_index);
-    if let Some(desc) = &reader.header.description {
+    let metadata = reader.metadata();
+    println!("  Title:       {}", metadata.title);
+    println!("  Version:     {}", metadata.engine_version);
+    println!("  Encoding:    {}", reader.encoding().name());
+    let enc_flags = reader.encryption_flags();
+    println!("  Encrypted:   blocks={}, index={}", enc_flags.encrypt_record_blocks, enc_flags.encrypt_key_index);
+    if let Some(desc) = &metadata.description {
         println!("  Description: {}", desc);
     }
     println!("\nStatistics:");

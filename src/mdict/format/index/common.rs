@@ -5,7 +5,7 @@
 //! full decoding.
 
 use crate::mdict::types::error::{MdictError, Result};
-use crate::mdict::types::models::{MdictHeader, MdictVersion};
+use crate::mdict::types::models::{MdictVersion, MdictEncoding};
 use crate::mdict::utils;
 
 /// Skips a length-prefixed text field without decoding its content.
@@ -16,23 +16,24 @@ use crate::mdict::utils;
 ///
 /// # Parameters
 /// - `reader`: Mutable reference to the byte slice being read
-/// - `header`: MDict header containing encoding and version information
+/// - `version`: MDict version
+/// - `encoding`: Text encoding
 ///
 /// # Returns
 /// - `Ok(())` if the text was successfully skipped
 /// - `Err(MdictError)` if the buffer is too short or format is invalid
-pub fn skip_text(reader: &mut &[u8], header: &MdictHeader) -> Result<()> {
+pub fn skip_text(reader: &mut &[u8], version: MdictVersion, encoding: MdictEncoding) -> Result<()> {
     // Read the length prefix (number of text units, not bytes)
-    let text_len_units = utils::read_small_number(reader, header.version.small_number_width())?;
+    let text_len_units = utils::read_small_number(reader, version.small_number_width())?;
     
     // V1 uses no null terminator, V2/V3 include a terminator unit
-    let terminator_units = match header.version {
+    let terminator_units = match version {
         MdictVersion::V1 => 0,
         MdictVersion::V2 | MdictVersion::V3 => 1,
     };
     
     // Calculate total bytes: (text + terminator) * bytes_per_unit
-    let total_bytes = ((text_len_units + terminator_units) as usize) * utils::unit_width(header.encoding);
+    let total_bytes = ((text_len_units + terminator_units) as usize) * utils::unit_width(encoding);
 
     // Validate sufficient data remains
     if reader.len() < total_bytes {

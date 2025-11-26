@@ -17,7 +17,7 @@ use log::{debug, info, warn, trace};
 use crate::mdict::codec::crypto;
 use crate::mdict::types::{
     error::{MdictError, Result},
-    models::{EncryptionFlags, MdictHeader, MdictVersion},
+    models::{EncryptionFlags, MdictMetadata, MdictVersion, MdictEncoding},
 };
 use crate::mdict::utils;
 
@@ -35,11 +35,11 @@ use crate::mdict::utils;
 /// * `passcode` - Optional `(regcode_hex, user_email)` for encrypted files
 ///
 /// # Returns
-/// A complete [`MdictHeader`] with all metadata and derived keys.
+/// A tuple of (version, encoding, encryption_flags, master_key, metadata)
 pub fn parse<R: Read>(
     file: &mut R,
     passcode: Option<(&str, &str)>,
-) -> Result<MdictHeader> {
+) -> Result<(MdictVersion, MdictEncoding, EncryptionFlags, Option<[u8; 16]>, MdictMetadata)> {
     info!("Parsing MDict header");
 
     // Step 1: Read header length
@@ -86,44 +86,44 @@ pub fn parse<R: Read>(
     let attrs = parse_xml_attributes(&sanitized_header)?;
 
     // Step 7: Build header structure from attributes
-    let mut header = build_header_from_attributes(&attrs)?;
+    let (version, encoding, encryption_flags, metadata) = build_header_from_attributes(&attrs)?;
     
     // Step 8: Validate encoding/version consistency
-    if header.version == MdictVersion::V3 && !header_bytes.ends_with(&[0, 0]) {
+    if version == MdictVersion::V3 && !header_bytes.ends_with(&[0, 0]) {
         debug!(
             "Consistency check passed: Version is {} (>= 3.0) and header was parsed as UTF-8.",
-            header.engine_version
+            metadata.engine_version
         );
-    } else if header.version != MdictVersion::V3 && header_bytes.ends_with(&[0, 0]) {
+    } else if version != MdictVersion::V3 && header_bytes.ends_with(&[0, 0]) {
         debug!(
             "Consistency check passed: Version is {} (< 3.0) and header was parsed as UTF-16LE.",
-            header.engine_version
+            metadata.engine_version
         );
     } else {
         warn!(
             "Potential header encoding mismatch! Guessed encoding based on terminator ('{}'), but parsed version is: {}. The file may not be parsed correctly.",
             if header_bytes.ends_with(&[0, 0]) { "ends with 0x0000" } else { "no 0x0000 suffix" },
-            header.engine_version
+            metadata.engine_version
         );
     }
 
     // Step 9: Derive master decryption key
-    header.master_key = try_derive_master_key(
+    let master_key = try_derive_master_key(
         passcode,
-        header.uuid.as_ref(),
-        header.version,
+        metadata.uuid.as_ref(),
+        version,
     )?;
 
     info!(
         "Header parsed successfully: version={}, title='{}', encoding={}, encrypted=(blocks={}, index={})",
-        header.engine_version,
-        header.title,
-        header.encoding.name(),
-        header.encryption_flags.encrypt_record_blocks,
-        header.encryption_flags.encrypt_key_index
+        metadata.engine_version,
+        metadata.title,
+        encoding.name(),
+        encryption_flags.encrypt_record_blocks,
+        encryption_flags.encrypt_key_index
     );
 
-    Ok(header)
+    Ok((version, encoding, encryption_flags, master_key, metadata))
 }
 
 /// Extracts all attributes from the root XML element.
@@ -155,10 +155,10 @@ fn parse_xml_attributes(xml: &str) -> Result<HashMap<String, String>> {
     }
 }
 
-/// Constructs a [`MdictHeader`] from parsed XML attributes.
+/// Constructs header components from parsed XML attributes.
 ///
 /// Applies defaults for missing optional fields and validates required fields.
-fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<MdictHeader> {
+fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<(MdictVersion, MdictEncoding, EncryptionFlags, MdictMetadata)> {
     // Extract and parse version number
     let version_str = attrs
         .get("GeneratedByEngineVersion")
@@ -204,17 +204,15 @@ fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<Mdict
     let stylesheet = attrs.get("StyleSheet").cloned();
     let uuid = attrs.get("UUID").map(|s| s.as_bytes().to_vec());
 
-    Ok(MdictHeader {
-        version: version_enum,
-        engine_version: version_str.to_string(),
-        encryption_flags,
-        encoding,
+    let metadata = MdictMetadata {
         title,
+        engine_version: version_str.to_string(),
         description,
-        stylesheet,
-        master_key: None, // Will be set separately
+        stylesheet_raw: stylesheet,
         uuid,
-    })
+    };
+
+    Ok((version_enum, encoding, encryption_flags, metadata))
 }
 
 /// Attempts to derive a master decryption key from available credentials.

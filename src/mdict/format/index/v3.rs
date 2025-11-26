@@ -15,7 +15,7 @@ use log::{debug, info, warn, trace};
 use crate::mdict::{
     types::{
         error::{MdictError, Result},
-        models::{V3BlockType, BlockMeta, MdictHeader, BlockType},
+        models::{V3BlockType, BlockMeta, BlockType, MdictVersion, MdictEncoding},
     },
     utils,
 };
@@ -40,7 +40,9 @@ use super::ParseResult;
 /// - `u64`: Total number of dictionary entries
 pub fn parse(
     file: &mut File,
-    header: &MdictHeader,
+    version: MdictVersion,
+    encoding: MdictEncoding,
+    master_key: Option<&[u8; 16]>,
 ) -> Result<ParseResult> {
     info!("Parsing v3.0 MDict file");
 
@@ -51,8 +53,8 @@ pub fn parse(
         scan_block_offsets(file, key_block_offset)?;
 
     // Step 2: Parse indexes to get metadata
-    let (num_entries, key_index) = parse_key_index(file, header, key_index_offset)?;
-    let record_index = parse_record_index(file, header, record_index_offset)?;
+    let (num_entries, key_index) = parse_key_index(file, version, encoding, master_key, key_index_offset)?;
+    let record_index = parse_record_index(file, version, encoding, master_key, record_index_offset)?;
 
     // Step 3: Read data block headers and build final metadata
     let key_blocks = parse_block_metadata(file, key_data_offset, &key_index, BlockType::Key)?;
@@ -168,7 +170,9 @@ type IndexParseResult = (Option<u64>, Vec<(u64, u64)>);
 /// Tuple of (optional entry count, metadata pairs for validation)
 fn parse_index<R: Read + Seek>(
     file: &mut R,
-    header: &MdictHeader,
+    version: MdictVersion,
+    encoding: MdictEncoding,
+    master_key: Option<&[u8; 16]>,
     offset: u64,
     block_type: BlockType,
 ) -> Result<IndexParseResult> {
@@ -196,8 +200,8 @@ fn parse_index<R: Read + Seek>(
         let decompressed = content::decode_block(
             &mut compressed,
             decompressed_size,
-            header.master_key.as_ref(),
-            header.version,
+            master_key,
+            version,
         )?;
         let mut reader = decompressed.as_slice();
 
@@ -220,8 +224,8 @@ fn parse_index<R: Read + Seek>(
                     }
 
                     // Skip first and last key texts (boundary keys for range queries, not needed for metadata extraction)
-                    common::skip_text(&mut reader, header)?;
-                    common::skip_text(&mut reader, header)?;
+                    common::skip_text(&mut reader, version, encoding)?;
+                    common::skip_text(&mut reader, version, encoding)?;
 
                     // Read block sizes (4 bytes each in v3 key index)
                     let block_size = utils::read_number(&mut reader, 4)?;
@@ -250,10 +254,12 @@ fn parse_index<R: Read + Seek>(
 /// Wrapper around [`parse_index`] that ensures the entry count is returned.
 fn parse_key_index<R: Read + Seek>(
     file: &mut R,
-    header: &MdictHeader,
+    version: MdictVersion,
+    encoding: MdictEncoding,
+    master_key: Option<&[u8; 16]>,
     offset: u64,
 ) -> Result<(u64, Vec<(u64, u64)>)> {
-    let (total_entries, index_pairs) = parse_index(file, header, offset, BlockType::Key)?;
+    let (total_entries, index_pairs) = parse_index(file, version, encoding, master_key, offset, BlockType::Key)?;
     Ok((total_entries.unwrap_or(0), index_pairs))
 }
 
@@ -263,10 +269,12 @@ fn parse_key_index<R: Read + Seek>(
 /// (not present in record indexes).
 fn parse_record_index<R: Seek + Read>(
     file: &mut R,
-    header: &MdictHeader,
+    version: MdictVersion,
+    encoding: MdictEncoding,
+    master_key: Option<&[u8; 16]>,
     offset: u64,
 ) -> Result<Vec<(u64, u64)>> {
-    let (_, index_pairs) = parse_index(file, header, offset, BlockType::Record)?;
+    let (_, index_pairs) = parse_index(file, version, encoding, master_key, offset, BlockType::Record)?;
     Ok(index_pairs)
 }
 
