@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mdict_reader::{FileType, Mdict, MdictError, MdictReader};
+use mdict_reader::{FileType, Mdict, MdictError, MdictReader, RecordData};
 
 // ==================== Constants ====================
 
@@ -101,19 +101,33 @@ fn run_info(file: &Path, shared_args: &SharedArgs) {
         Mdict::Mdx(reader) => {
             println!("\nFile Type: MDX (Dictionary)");
             print_common_info(&reader);
-            print_samples(&reader, "Definitions", |definition| {
-                let mut truncated = definition.trim().replace(['\n', '\r'], " ");
-                if truncated.chars().count() > 100 {
-                    truncated = truncated.chars().take(100).collect::<String>() + "...";
+            print_samples(&reader, "Definitions", |record_data| {
+                match record_data {
+                    RecordData::Content(definition) => {
+                        let mut truncated = definition.trim().replace(['\n', '\r'], " ");
+                        if truncated.chars().count() > 100 {
+                            truncated = truncated.chars().take(100).collect::<String>() + "...";
+                        }
+                        println!("     Def: {}", truncated);
+                    }
+                    RecordData::Redirect(target) => {
+                        println!("     Redirect → {}", target);
+                    }
                 }
-                println!("     Def: {}", truncated);
             });
         }
         Mdict::Mdd(reader) => {
             println!("\nFile Type: MDD (Resource Data)");
             print_common_info(&reader);
-            print_samples(&reader, "Resource Sizes", |data| {
-                println!("     Resource Size: {} bytes", data.len());
+            print_samples(&reader, "Resource Sizes", |record_data| {
+                match record_data {
+                    RecordData::Content(data) => {
+                        println!("     Resource Size: {} bytes", data.len());
+                    }
+                    RecordData::Redirect(target) => {
+                        println!("     Redirect → {}", target);
+                    }
+                }
             });
         }
     }
@@ -195,11 +209,20 @@ fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, form
     let mut out = create_writer(&out_path)?;
     let mut first_entry = true;
     for result in reader.iter_records() {
-        let (key, def) = match result {
+        let (key, record_data) = match result {
             Ok(pair) => pair,
             Err(e) => {
                 eprintln!("   WARN: Skipping entry due to error: {}", e);
                 continue;
+            }
+        };
+
+        // Extract the actual content, handling redirects
+        let def = match record_data {
+            RecordData::Content(content) => content,
+            RecordData::Redirect(target) => {
+                // For redirects, output a reference to the target
+                format!("@@@LINK={}", target)
             }
         };
 
@@ -243,10 +266,20 @@ fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, ta
 
     let mut success_count = 0;
     for result in reader.iter_records() {
-        let (key, data) = match result {
+        let (key, record_data) = match result {
             Ok(pair) => pair,
             Err(e) => { eprintln!("   WARN: Skipping resource due to error: {}", e); continue; }
         };
+
+        // Extract the actual data, handling redirects
+        let data = match record_data {
+            RecordData::Content(data) => data,
+            RecordData::Redirect(target) => {
+                eprintln!("   WARN: Skipping redirect: {} → {}", key, target);
+                continue;
+            }
+        };
+
         let rel_path = key.replace('\\', std::path::MAIN_SEPARATOR_STR);
         let out_path = target_dir.join(rel_path.strip_prefix(std::path::MAIN_SEPARATOR).unwrap_or(&rel_path));
         
@@ -353,15 +386,15 @@ fn print_common_info<T: FileType>(reader: &MdictReader<T>) {
 fn print_samples<T: FileType>(
     reader: &MdictReader<T>,
     description: &str,
-    print_record_details: impl Fn(&T::Record),
+    print_record_details: impl Fn(&RecordData<T::Record>),
 ) {
     let desired_sample_count = 10;
     println!("\nSample Entries & {} (showing first up to {}):", description, desired_sample_count);
     for (i, entry_result) in reader.iter_records().take(desired_sample_count).enumerate() {
         match entry_result {
-            Ok((key, record)) => {
+            Ok((key, record_data)) => {
                 println!("  {:2}. Key: {}", i + 1, key);
-                print_record_details(&record);
+                print_record_details(&record_data);
             }
             Err(e) => eprintln!("  Error fetching entry {}: {}", i + 1, e),
         }

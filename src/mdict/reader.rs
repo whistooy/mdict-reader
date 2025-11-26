@@ -10,7 +10,7 @@ use super::format;
 use super::iter::{KeysIterator, RecordIterator};
 use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
-use super::types::models::{BlockMeta, KeyEntry, MdictVersion, MdictMetadata, EncryptionFlags, MdictEncoding};
+use super::types::models::{BlockMeta, KeyEntry, MdictVersion, MdictMetadata, EncryptionFlags, RecordData, StyleSheet, parse_stylesheet, MdictEncoding};
 
 /// The main reader for MDict dictionary files.
 ///
@@ -32,6 +32,7 @@ pub struct MdictReader<T: FileType> {
     encoding: MdictEncoding,
     encryption_flags: EncryptionFlags,
     master_key: Option<[u8; 16]>,
+    parsed_stylesheet: StyleSheet,
     
     // Display metadata
     metadata: MdictMetadata,
@@ -125,12 +126,18 @@ impl<T: FileType> MdictReader<T> {
             record_blocks.len()
         );
 
+        // Parse stylesheet immediately if present (returns empty HashMap if none)
+        let parsed_stylesheet = metadata.stylesheet_raw.as_ref()
+            .map(|s| parse_stylesheet(s))
+            .unwrap_or_default();
+
         Ok(Self {
             file: Arc::new(Mutex::new(file)),
             version,
             encoding,
             encryption_flags,
             master_key,
+            parsed_stylesheet,
             metadata,
             key_blocks,
             record_blocks,
@@ -200,18 +207,38 @@ impl<T: FileType> MdictReader<T> {
         KeysIterator::new(self)
     }
 
-    /// Returns an iterator over all `(key, record)` pairs.
+    /// Returns an iterator over all `(key, record_data)` pairs.
     ///
     /// This is equivalent to `reader.iter_keys().with_records()`.
     ///
     /// The iterator handles all decoding steps:
     /// 1. Decodes key blocks to get search keys
     /// 2. Resolves record locations via block metadata
-    /// 3. Decodes and extracts record data
+    /// 3. Decodes and extracts record data (including redirect detection)
+    ///
+    /// # Redirect Handling
+    /// This method returns [`RecordData<T::Record>`] which can be:
+    /// - `RecordData::Content(data)` - Actual record content
+    /// - `RecordData::Redirect(target_key)` - Internal redirect to another entry
+    ///
+    /// Users are responsible for resolving redirects if desired.
     ///
     /// # Yield Type
-    /// - **MDX files**: `Result<(String, String)>` - key and definition text
-    /// - **MDD files**: `Result<(String, Vec<u8>)>` - key and binary resource data
+    /// - **MDX files**: `Result<(String, RecordData<String>)>` - key and definition or redirect
+    /// - **MDD files**: `Result<(String, RecordData<Vec<u8>>)>` - key and resource data or redirect
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use mdict_reader::{MdictReader, Mdx, RecordData};
+    /// # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None).unwrap();
+    /// for result in reader.iter_records() {
+    ///     let (key, record_data) = result.unwrap();
+    ///     match record_data {
+    ///         RecordData::Content(text) => println!("{}: {}", key, text),
+    ///         RecordData::Redirect(target) => println!("{} → {}", key, target),
+    ///     }
+    /// }
+    /// ```
     pub fn iter_records(&self) -> RecordIterator<'_, T> {
         self.iter_keys().with_records()
     }
@@ -226,13 +253,24 @@ impl<T: FileType> MdictReader<T> {
     /// * `end` - Ending byte offset (exclusive)
     ///
     /// # Return Type
-    /// - **MDX**: `Result<String>` - decoded definition text
-    /// - **MDD**: `Result<Vec<u8>>` - binary resource data
+    /// Returns a [`RecordData`] enum which can be:
+    /// - `RecordData::Content(T::Record)` - Actual record content
+    /// - `RecordData::Redirect(String)` - Internal redirect to another key
     ///
     /// # Performance Note
     /// This method performs file I/O for each call. For sequential access,
     /// prefer using [`iter_records()`](Self::iter_records) which caches blocks.
-    pub fn read_record(&self, start: u64, end: u64) -> Result<T::Record> {
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use mdict_reader::{MdictReader, Mdx, RecordData};
+    /// # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None).unwrap();
+    /// match reader.read_record(0, 100).unwrap() {
+    ///     RecordData::Content(text) => println!("Content: {}", text),
+    ///     RecordData::Redirect(target) => println!("Redirects to: {}", target),
+    /// }
+    /// ```
+    pub fn read_record(&self, start: u64, end: u64) -> Result<RecordData<T::Record>> {
         trace!("Reading record: range=[{}..{}]", start, end);
         
         let block_meta = self.find_block_by_offset(start)?;
@@ -300,8 +338,8 @@ impl<T: FileType> MdictReader<T> {
     /// * `block_bytes` - Decompressed block data
     /// * `start` - Start position of the record within the block
     /// * `end` - End position of the record within the block (exclusive)
-    pub fn parse_record(&self, block_bytes: &[u8], start: u64, end: u64) -> Result<T::Record> {
-        content::parse_record::<T>(block_bytes, start, end, self.encoding)
+    pub fn parse_record(&self, block_bytes: &[u8], start: u64, end: u64) -> Result<RecordData<T::Record>> {
+        content::parse_record::<T>(block_bytes, start, end, self.encoding, &self.parsed_stylesheet)
     }
 
     /// Reads and parses all key entries from a key block.

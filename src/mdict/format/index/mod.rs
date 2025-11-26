@@ -2,7 +2,7 @@
 //!
 //! This module acts as the main entry point for parsing the key and record
 //! block indexes of an MDict file. It dispatches to the appropriate
-//! version-specific parser based on the `MdictHeader`.
+//! version-specific parser based on the `MdictVersion`.
 
 use std::fs::File;
 use crate::mdict::types::error::Result;

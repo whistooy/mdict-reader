@@ -4,16 +4,19 @@
 //! dictionary data with progressive enrichment:
 //!
 //! 1. [`KeysIterator`] - Base iterator yielding `(key, record_id)` pairs
-//! 2. [`RecordIterator`] - Fully resolved `(key, record)` pairs with caching
+//! 2. [`RecordIterator`] - Fully resolved `(key, RecordData)` pairs with redirect detection
 //!
 //! # Example
 //! ```no_run
-//! # use mdict_reader::{MdictReader, Mdx};
+//! # use mdict_reader::{MdictReader, Mdx, RecordData};
 //! # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None).unwrap();
 //! // Iterate through all definitions
 //! for result in reader.iter_records() {
-//!     let (key, definition) = result.unwrap();
-//!     println!("{}: {}", key, definition);
+//!     let (key, record_data) = result.unwrap();
+//!     match record_data {
+//!         RecordData::Content(text) => println!("{}: {}", key, text),
+//!         RecordData::Redirect(target) => println!("{} → {}", key, target),
+//!     }
 //! }
 //! ```
 
@@ -23,7 +26,7 @@ use std::vec::IntoIter;
 use super::reader::MdictReader;
 use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
-use super::types::models::KeyEntry;
+use super::types::models::{KeyEntry, RecordData};
 
 /// Iterator over dictionary keys and their record IDs.
 ///
@@ -47,10 +50,11 @@ impl<'a, T: FileType> KeysIterator<'a, T> {
         }
     }
 
-    /// Transforms this iterator to include full record data.
+    /// Transforms this iterator to include full record data with redirect detection.
     ///
     /// The returned [`RecordIterator`] decodes and caches record blocks,
-    /// yielding complete `(key, record)` pairs.
+    /// yielding complete `(key, RecordData)` pairs where RecordData can be
+    /// either Content or Redirect.
     pub fn with_records(self) -> RecordIterator<'a, T> {
         RecordIterator {
             reader: self.reader,
@@ -93,10 +97,13 @@ impl<'a, T: FileType> Iterator for KeysIterator<'a, T> {
     }
 }
 
-/// Iterator over complete dictionary entries with record data.
+/// Iterator over complete dictionary entries with record data and redirect detection.
 ///
-/// This is the most complete iterator, yielding `Result<(String, T::Record)>`
-/// where `T::Record` is `String` for MDX files and `Vec<u8>` for MDD files.
+/// Yields `Result<(String, RecordData<T::Record>)>` where `RecordData` can be:
+/// - `RecordData::Content(data)` - Actual record content
+/// - `RecordData::Redirect(target)` - Internal redirect to another key
+///
+/// Users are responsible for resolving redirects if desired.
 ///
 /// # Performance
 /// This iterator caches decompressed record blocks to avoid redundant
@@ -113,7 +120,7 @@ pub struct RecordIterator<'a, T: FileType> {
 }
 
 impl<'a, T: FileType> Iterator for RecordIterator<'a, T> {
-    type Item = Result<(String, T::Record)>;
+    type Item = Result<(String, RecordData<T::Record>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Get next key-id pair
@@ -162,7 +169,7 @@ impl<'a, T: FileType> Iterator for RecordIterator<'a, T> {
         
         // Extract record from cached block data
         match self.reader.parse_record(&self.cached_block_bytes, start, end) {
-            Ok(record) => Some(Ok((key_text, record))),
+            Ok(record_data) => Some(Ok((key_text, record_data))),
             Err(e) => Some(Err(e)),
         }
     }

@@ -292,6 +292,7 @@ dependencies = [
  "log",
  "lzokay",
  "quick-xml",
+ "regex",
  "ripemd",
  "serde_json",
  "thiserror",

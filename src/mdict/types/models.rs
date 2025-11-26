@@ -5,6 +5,7 @@
 //! - Block and entry information
 //! - Version and type enumerations
 
+use std::collections::HashMap;
 use encoding_rs::Encoding;
 use super::error::{MdictError, Result};
 
@@ -24,6 +25,23 @@ pub struct EncryptionFlags {
     pub encrypt_key_index: bool,
 }
 
+/// Stylesheet tag mapping for text formatting.
+///
+/// Maps style identifiers (1-255) to opening and closing HTML/CSS tags.
+/// Format in header: line triplets of (style_id, begin_tag, end_tag).
+pub type StyleSheet = HashMap<u8, (String, String)>;
+
+/// The result of processing a dictionary record.
+///
+/// Records can either contain actual content or redirect to another entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordData<T> {
+    /// Actual record content
+    Content(T),
+    /// Internal redirect to another key
+    Redirect(String),
+}
+
 /// Display-only metadata from MDict file header.
 ///
 /// This structure contains user-visible information that doesn't affect
@@ -36,6 +54,32 @@ pub struct MdictMetadata {
     pub description: Option<String>,
     pub stylesheet_raw: Option<String>,
     pub uuid: Option<Vec<u8>>,
+}
+
+/// Parses the stylesheet string into a usable map structure.
+///
+/// The stylesheet format is line-based triplets:
+/// - Line 0: style_id (1-255)
+/// - Line 1: opening tag
+/// - Line 2: closing tag
+///
+/// Returns the parsed stylesheet (empty HashMap if no valid styles found).
+pub fn parse_stylesheet(stylesheet_str: &str) -> StyleSheet {
+    let mut map = HashMap::new();
+    let lines: Vec<&str> = stylesheet_str.lines().collect();
+    
+    // Process in triplets (style_id, begin_tag, end_tag)
+    let mut i = 0;
+    while i + 2 < lines.len() {
+        if let Ok(style_id) = lines[i].parse::<u8>() {
+            let begin_tag = lines[i + 1].to_string();
+            let end_tag = lines[i + 2].to_string();
+            map.insert(style_id, (begin_tag, end_tag));
+        }
+        i += 3;
+    }
+    
+    map
 }
 
 /// A single key entry from the dictionary index.

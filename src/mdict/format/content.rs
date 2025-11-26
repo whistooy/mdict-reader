@@ -160,12 +160,17 @@ pub fn parse_key_entries(
 /// * `start` - Start position of the record within the block
 /// * `end` - End position of the record within the block (exclusive)
 /// * `encoding` - Text encoding for record data
+/// * `stylesheet` - Parsed stylesheet for MDX files (empty if none defined)
+///
+/// # Returns
+/// A [`RecordData`] enum that can be either actual content or a redirect to another key.
 pub fn parse_record<T: FileType>(
     block_bytes: &[u8],
     start: u64,
     end: u64,
     encoding: &'static encoding_rs::Encoding,
-) -> Result<T::Record> {
+    stylesheet: &StyleSheet,
+) -> Result<RecordData<T::Record>> {
     trace!(
         "Extracting {} record: range=[{}..{}], size={}",
         T::DEBUG_NAME,
@@ -185,7 +190,7 @@ pub fn parse_record<T: FileType>(
     }
     
     let record_slice = &block_bytes[start..end];
-    T::process_record(record_slice, encoding)
+    T::process_record(record_slice, encoding, stylesheet)
 }
 
 /// Reads and decodes a null-terminated string, advancing the reader.

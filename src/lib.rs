@@ -51,7 +51,7 @@ pub use mdict::{
     // The error types
     types::error::{MdictError, Result},
     // Models are essential for understanding the data
-    types::models::{EncryptionFlags, KeyEntry},
+    types::models::{EncryptionFlags, KeyEntry, RecordData},
 };
 
 use std::path::Path;
