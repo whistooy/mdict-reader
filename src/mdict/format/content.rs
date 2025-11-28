@@ -46,7 +46,7 @@ pub fn decode_block_into(
     output: &mut Vec<u8>,
     raw_block: &mut [u8],
     expected_decompressed_size: u64,
-    master_key: Option<&[u8; 16]>,
+    master_key: MasterKey,
     version: MdictVersion,
 ) -> Result<()> {
     if raw_block.len() < 8 {
@@ -66,10 +66,10 @@ pub fn decode_block_into(
     );
 
     // Step 2: Determine decryption key
-    let decryption_key: [u8; 16] = match master_key {
+    let decryption_key = match master_key {
         Some(key) => {
             trace!("Using master key from file header");
-            *key
+            key
         }
         None => {
             trace!("Deriving ephemeral key from block checksum");

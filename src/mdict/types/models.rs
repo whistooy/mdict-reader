@@ -14,6 +14,9 @@ use super::error::{MdictError, Result};
 /// This is a static reference to an encoding from the `encoding_rs` crate.
 pub type MdictEncoding = &'static Encoding;
 
+/// Type alias for the master key used in encrypted MDict files.
+pub type MasterKey = Option<[u8; 16]>;
+
 /// Encryption flags parsed from the MDict header.
 ///
 /// The MDict format uses a bitmask to indicate which parts of the file are encrypted:
@@ -54,6 +57,19 @@ pub struct MdictMetadata {
     pub description: Option<String>,
     pub stylesheet_raw: Option<String>,
     pub uuid: Option<Vec<u8>>,
+}
+
+/// All parsing-critical information from the MDict header.
+///
+/// This struct consolidates fields required for reading and decrypting
+/// the dictionary, separating them from display-only metadata.
+#[derive(Debug)]
+pub struct MdictHeader {
+    pub version: MdictVersion,
+    pub encoding: MdictEncoding,
+    pub encryption_flags: EncryptionFlags,
+    pub master_key: MasterKey,
+    pub metadata: MdictMetadata,
 }
 
 /// Parses the stylesheet string into a usable map structure.

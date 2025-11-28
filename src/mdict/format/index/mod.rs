@@ -6,7 +6,9 @@
 
 use std::fs::File;
 use crate::mdict::types::error::Result;
-use crate::mdict::types::models::{BlockMeta, MdictVersion, EncryptionFlags, MdictEncoding};
+use crate::mdict::types::models::{
+    BlockMeta, EncryptionFlags, MdictEncoding, MdictVersion, MasterKey,
+};
 
 pub mod common;
 pub mod v1v2;
@@ -31,7 +33,7 @@ pub fn parse(
     version: MdictVersion,
     encoding: MdictEncoding,
     encryption_flags: EncryptionFlags,
-    master_key: Option<&[u8; 16]>,
+    master_key: MasterKey,
 ) -> Result<ParseResult> {
     match version {
         MdictVersion::V3 => v3::parse(file, version, encoding, master_key),

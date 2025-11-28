@@ -19,7 +19,10 @@ use crate::mdict::{
     codec::{crypto, compression},
     types::{
         error::{MdictError, Result},
-        models::{BlockMeta, CompressionType, MdictVersion, BlockType, EncryptionFlags, MdictEncoding},
+        models::{
+            BlockMeta, BlockType, CompressionType, EncryptionFlags, MasterKey, MdictEncoding,
+            MdictVersion,
+        },
     },
     utils,
 };
@@ -43,17 +46,19 @@ pub fn parse(
     version: MdictVersion,
     encoding: MdictEncoding,
     encryption_flags: EncryptionFlags,
-    master_key: Option<&[u8; 16]>,
+    master_key: MasterKey,
 ) -> Result<ParseResult> {
     // Parse key block index
-    let (key_blocks, num_entries) = parse_block_info(file, version, encoding, encryption_flags, master_key, BlockType::Key)?;
+    let (key_blocks, num_entries) =
+        parse_block_info(file, version, encoding, encryption_flags, master_key, BlockType::Key)?;
 
     // Skip past all key block data to reach record section
     let total_key_blocks_size: u64 = key_blocks.iter().map(|b| b.compressed_size).sum();
     file.seek(SeekFrom::Current(total_key_blocks_size as i64))?;
 
     // Parse record block index
-    let (record_blocks, _) = parse_block_info(file, version, encoding, encryption_flags, master_key, BlockType::Record)?;
+    let (record_blocks, _) =
+        parse_block_info(file, version, encoding, encryption_flags, master_key, BlockType::Record)?;
 
     let total_record_decomp_size: u64 = record_blocks.iter().map(|b| b.decompressed_size).sum();
 
@@ -86,7 +91,7 @@ fn parse_block_info<R: Seek + Read>(
     version: MdictVersion,
     encoding: MdictEncoding,
     encryption_flags: EncryptionFlags,
-    master_key: Option<&[u8; 16]>,
+    master_key: MasterKey,
     block_type: BlockType,
 ) -> Result<(Vec<BlockMeta>, u64)> {
     info!("Parsing {} block info section", block_type);
@@ -192,7 +197,7 @@ fn parse_key_block_index<R: Seek + Read>(
     file: &mut R,
     version: MdictVersion,
     encryption_flags: EncryptionFlags,
-    master_key: Option<&[u8; 16]>,
+    master_key: MasterKey,
 ) -> Result<(Vec<u8>, u64, u64)> {
     // Read the info block (fixed size based on version)
     let info_size = match version {
@@ -207,7 +212,7 @@ fn parse_key_block_index<R: Seek + Read>(
     if encryption_flags.encrypt_record_blocks {
         if let Some(key) = master_key {
             debug!("Decrypting key block info (Salsa20)");
-            crypto::salsa_decrypt(&mut info_bytes, key);
+            crypto::salsa_decrypt(&mut info_bytes, &key);
         } else {
             return Err(MdictError::PasscodeRequired);
         }

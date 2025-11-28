@@ -17,7 +17,9 @@ use log::{debug, info, warn, trace};
 use crate::mdict::codec::crypto;
 use crate::mdict::types::{
     error::{MdictError, Result},
-    models::{EncryptionFlags, MdictMetadata, MdictVersion, MdictEncoding},
+    models::{
+        EncryptionFlags, MdictHeader, MdictMetadata, MdictVersion, MdictEncoding, MasterKey,
+    },
 };
 use crate::mdict::utils;
 
@@ -39,7 +41,7 @@ use crate::mdict::utils;
 pub fn parse<R: Read>(
     file: &mut R,
     passcode: Option<(&str, &str)>,
-) -> Result<(MdictVersion, MdictEncoding, EncryptionFlags, Option<[u8; 16]>, MdictMetadata)> {
+) -> Result<MdictHeader> {
     info!("Parsing MDict header");
 
     // Step 1: Read header length
@@ -123,7 +125,13 @@ pub fn parse<R: Read>(
         encryption_flags.encrypt_key_index
     );
 
-    Ok((version, encoding, encryption_flags, master_key, metadata))
+    Ok(MdictHeader {
+        version,
+        encoding,
+        encryption_flags,
+        master_key,
+        metadata,
+    })
 }
 
 /// Extracts all attributes from the root XML element.
@@ -230,7 +238,7 @@ fn try_derive_master_key(
     passcode: Option<(&str, &str)>,
     uuid: Option<&Vec<u8>>,
     version: MdictVersion,
-) -> Result<Option<[u8; 16]>> {
+) -> Result<MasterKey> {
     // Priority 1: Use explicit passcode if provided
     if let Some((reg_code_hex, user_email)) = passcode {
         info!("Deriving master decryption key from provided passcode");

@@ -10,7 +10,10 @@ use super::format;
 use super::iter::{KeysIterator, RecordIterator};
 use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
-use super::types::models::{BlockMeta, MdictVersion, MdictMetadata, EncryptionFlags, RecordData, StyleSheet, parse_stylesheet, MdictEncoding};
+use super::types::models::{
+    BlockMeta, EncryptionFlags, MasterKey, MdictEncoding, MdictHeader, MdictMetadata, MdictVersion,
+    RecordData, StyleSheet, parse_stylesheet,
+};
 
 /// The main reader for MDict dictionary files.
 ///
@@ -31,7 +34,7 @@ pub struct MdictReader<T: FileType> {
     version: MdictVersion,
     encoding: MdictEncoding,
     encryption_flags: EncryptionFlags,
-    master_key: Option<[u8; 16]>,
+    master_key: MasterKey,
     parsed_stylesheet: StyleSheet,
     
     // Display metadata
@@ -79,7 +82,13 @@ impl<T: FileType> MdictReader<T> {
 
         // Step 1: Parse file header and extract metadata
         debug!("Parsing file header");
-        let (version, mut encoding, encryption_flags, master_key, metadata) = format::header::parse(&mut file, passcode)?;
+        let MdictHeader {
+            version,
+            mut encoding,
+            encryption_flags,
+            master_key,
+            metadata,
+        } = format::header::parse(&mut file, passcode)?;
 
         // Step 2: Apply version-specific encoding rules
         let original_encoding = encoding;
@@ -116,7 +125,7 @@ impl<T: FileType> MdictReader<T> {
         // Step 3: Parse index blocks (version-specific)
         debug!("Parsing block indexes");
         let (key_blocks, record_blocks, total_record_decomp_size, num_entries) =
-            format::index::parse(&mut file, version, encoding, encryption_flags, master_key.as_ref())?;
+            format::index::parse(&mut file, version, encoding, encryption_flags, master_key)?;
 
         info!(
             "{} file loaded: {} entries, {} key blocks, {} record blocks",
@@ -371,7 +380,7 @@ impl<T: FileType> MdictReader<T> {
             output,
             &mut raw_block,
             block_meta.decompressed_size,
-            self.master_key.as_ref(),
+            self.master_key,
             self.version,
         )
     }
