@@ -28,15 +28,22 @@
 //! `MdictReader` directly for a more direct and type-safe experience.
 //!
 //! ```no_run
-//! use mdict_reader::{MdictReader, Mdx};
+//! use mdict_reader::{MdictReader, RecordData, Mdx};
 //!
 //! // The type parameter `Mdx` specializes the reader for dictionary files.
 //! let mdx_reader = MdictReader::<Mdx>::new("path/to/dictionary.mdx", None, None).unwrap();
 //!
-//! // The iterator now yields `Result<(String, String)>` directly.
+//! // The iterator yields `RecordData`, which can be content or a redirect.
 //! for result in mdx_reader.iter_records() {
-//!     let (key, definition) = result.unwrap();
-//!     println!("Key: {}, Definition: {}", key, definition);
+//!     let (key, record) = result.unwrap();
+//!     match record {
+//!         RecordData::Content(definition) => {
+//!             println!("Key: {}, Definition: {}", key, definition);
+//!         }
+//!         RecordData::Redirect(target_key) => {
+//!             println!("Key: {} -> (Redirects to: {})", key, target_key);
+//!         }
+//!     }
 //! }
 //! ```
 
