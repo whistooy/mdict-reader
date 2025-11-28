@@ -82,15 +82,6 @@ pub fn parse_stylesheet(stylesheet_str: &str) -> StyleSheet {
     map
 }
 
-/// A single key entry from the dictionary index.
-///
-/// Associates a search key (word/term) with its record ID, which points to
-/// the actual definition data in the record blocks.
-#[derive(Debug)]
-pub struct KeyEntry {
-    pub id: u64,
-    pub text: String,
-}
 
 /// Metadata describing a single compressed data block.
 ///

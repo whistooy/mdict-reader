@@ -10,7 +10,7 @@ use super::format;
 use super::iter::{KeysIterator, RecordIterator};
 use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
-use super::types::models::{BlockMeta, KeyEntry, MdictVersion, MdictMetadata, EncryptionFlags, RecordData, StyleSheet, parse_stylesheet, MdictEncoding};
+use super::types::models::{BlockMeta, MdictVersion, MdictMetadata, EncryptionFlags, RecordData, StyleSheet, parse_stylesheet, MdictEncoding};
 
 /// The main reader for MDict dictionary files.
 ///
@@ -278,9 +278,10 @@ impl<T: FileType> MdictReader<T> {
         let block_start = start - block_meta.decompressed_offset;
         let block_end = end - block_meta.decompressed_offset;
         
-        let block_bytes = self.read_and_decode_block(*block_meta)?;
+        let mut buffer = Vec::new();
+        self.read_and_decode_block_into(&mut buffer, *block_meta)?;
         
-        self.parse_record(&block_bytes, block_start, block_end)
+        self.parse_record(&buffer, block_start, block_end)
     }
 
     /// Finds the record block containing the given offset.
@@ -342,13 +343,6 @@ impl<T: FileType> MdictReader<T> {
         content::parse_record::<T>(block_bytes, start, end, self.encoding, &self.parsed_stylesheet)
     }
 
-    /// Reads and parses all key entries from a key block.
-    pub(crate) fn read_key_block_entries(&self, block_meta: BlockMeta) -> Result<Vec<KeyEntry>> {
-        trace!("Reading key block at file offset {}", block_meta.file_offset);
-        let decompressed = self.read_and_decode_block(block_meta)?;
-        content::parse_key_entries(&decompressed, self.version, self.encoding)
-    }
-
     /// Reads, decrypts, and decompresses a block from the file.
     ///
     /// This is a public method to enable custom caching strategies. Advanced users
@@ -360,7 +354,7 @@ impl<T: FileType> MdictReader<T> {
     ///
     /// # Returns
     /// The fully decompressed block data ready for record extraction.
-    pub fn read_and_decode_block(&self, block_meta: BlockMeta) -> Result<Vec<u8>> {
+    pub fn read_and_decode_block_into(&self, output: &mut Vec<u8>, block_meta: BlockMeta) -> Result<()> {
         trace!(
             "Reading block: offset={}, compressed={} bytes, decompressed={} bytes",
             block_meta.file_offset,
@@ -373,7 +367,8 @@ impl<T: FileType> MdictReader<T> {
         let mut raw_block = vec![0u8; block_meta.compressed_size as usize];
         file.read_exact(&mut raw_block)?;
 
-        content::decode_block(
+        content::decode_block_into(
+            output,
             &mut raw_block,
             block_meta.decompressed_size,
             self.master_key.as_ref(),

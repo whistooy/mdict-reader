@@ -197,7 +197,9 @@ fn parse_index<R: Read + Seek>(
         file.read_exact(&mut compressed)?;
         
         // Decompress and decrypt if necessary
-        let decompressed = content::decode_block(
+        let mut decompressed = Vec::new();
+        content::decode_block_into(
+            &mut decompressed,
             &mut compressed,
             decompressed_size,
             master_key,

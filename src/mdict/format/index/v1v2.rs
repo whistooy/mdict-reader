@@ -245,7 +245,7 @@ fn parse_key_block_index<R: Seek + Read>(
     // Read and decompress the key index data
     let mut compressed = vec![0u8; key_index_comp_len as usize];
     file.read_exact(&mut compressed)?;
-    let index_data = decompress_key_index(&compressed, key_index_decomp_len, encryption_flags)?;
+    let index_data = decompress_key_index(&mut compressed, key_index_decomp_len, encryption_flags)?;
 
     Ok((index_data, num_blocks, num_entries))
 }
@@ -288,7 +288,7 @@ fn parse_record_block_index<R: Seek + Read>(
 /// - `decomp_len`: Expected decompressed length (None for v1)
 /// - `header`: MDict header with encryption settings
 fn decompress_key_index(
-    compressed: &[u8],
+    compressed: &mut [u8],
     decomp_len: Option<u64>,
     encryption_flags: EncryptionFlags,
 ) -> Result<Vec<u8>> {
@@ -300,21 +300,20 @@ fn decompress_key_index(
         );
         
         // Decrypt if key index encryption is enabled
-        let payload = if encryption_flags.encrypt_key_index {
+        let payload_start = 8;
+        if encryption_flags.encrypt_key_index {
             debug!("Decrypting key index (fast decrypt with checksum-derived key)");
             let key = crypto::derive_key_for_v2_index(compressed);
-            let mut decrypted = compressed[8..].to_vec();
-            crypto::fast_decrypt(&mut decrypted, &key);
-            decrypted
-        } else {
-            compressed[8..].to_vec()
-        };
+            let payload_slice = &mut compressed[payload_start..];
+            crypto::fast_decrypt(payload_slice, &key);
+        }
+        let payload = &compressed[payload_start..];
 
         // Read compression type from header and decompress
         let compression_type = CompressionType::try_from(LittleEndian::read_u32(&compressed[0..4]) as u8)?;
         debug!("Decompressing key index using {:?}", compression_type);
-        let decompressed =
-            compression::decompress_payload(&payload, compression_type, decomp_len)?;
+        let mut decompressed = Vec::new();
+        compression::decompress_payload_into(&mut decompressed, payload, compression_type, decomp_len)?;
 
         // Verify checksum to ensure data integrity
         let checksum_expected = BigEndian::read_u32(&compressed[4..8]);

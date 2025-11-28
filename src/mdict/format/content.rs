@@ -42,12 +42,13 @@ use crate::mdict::utils;
 ///
 /// # Returns
 /// Fully decoded block data ready for parsing.
-pub fn decode_block(
+pub fn decode_block_into(
+    output: &mut Vec<u8>,
     raw_block: &mut [u8],
     expected_decompressed_size: u64,
     master_key: Option<&[u8; 16]>,
     version: MdictVersion,
-) -> Result<Vec<u8>> {
+) -> Result<()> {
     if raw_block.len() < 8 {
         return Err(MdictError::InvalidFormat("Block too short (minimum 8 bytes required)".to_string()));
     }
@@ -101,14 +102,15 @@ pub fn decode_block(
     }
 
     // Step 5: Decompress payload
-    let decompressed = compression::decompress_payload(
+    compression::decompress_payload_into(
+        output,
         payload,
         compression_type,
         expected_decompressed_size,
     )?;
 
     if version != MdictVersion::V3 {
-        let checksum_actual = adler32_slice(decompressed.as_slice());
+        let checksum_actual = adler32_slice(output.as_slice());
         trace!("V1/V2 block checksum on decrypted data: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
         if checksum_actual != checksum_expected {
             return Err(MdictError::ChecksumMismatch {
@@ -118,36 +120,28 @@ pub fn decode_block(
         }
     }
 
-    Ok(decompressed)
+    Ok(())
 }
 
-/// Parses key entries from a decompressed key block.
+/// Reads a single key entry from a key block stream.
 ///
 /// Each entry consists of:
 /// - Record ID (4 or 8 bytes depending on version)
 /// - Null-terminated key text
 ///
 /// # Parameters
-/// * `data` - Decompressed key block data
+/// * `reader` - Source providing decompressed key block data
 /// * `version` - MDict version for field widths
 /// * `encoding` - Text encoding for key strings
-pub fn parse_key_entries(
-    data: &[u8],
+pub fn read_next_key_entry(
+    reader: &mut &[u8],
     version: MdictVersion,
     encoding: &'static encoding_rs::Encoding,
-) -> Result<Vec<KeyEntry>> {
-    trace!("Parsing key entries from {} byte block", data.len());
-    let mut entries = Vec::new();
-    let mut reader = data;
-    
-    while !reader.is_empty() {
-        let record_id = utils::read_number(&mut reader, version.number_width())?;
-        let text = read_null_terminated_string(&mut reader, encoding)?;
-        entries.push(KeyEntry { id: record_id, text });
-    }
-    
-    trace!("Parsed {} key entries from block", entries.len());
-    Ok(entries)
+) -> Result<(String, u64)> {
+    let record_id = utils::read_number(reader, version.number_width())?;
+    let text = read_null_terminated_string(reader, encoding)?;
+
+    Ok((text, record_id))
 }
 
 /// Extracts and decodes a single record from a decompressed block.

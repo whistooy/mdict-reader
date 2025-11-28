@@ -14,54 +14,59 @@ use lzokay::decompress::decompress as lzokay_decompress;
 use crate::mdict::types::error::{MdictError, Result};
 use crate::mdict::types::models::CompressionType;
 
-/// Decompresses a payload using the specified compression algorithm.
+/// Decompresses a payload into a pre-allocated output buffer.
 ///
 /// # Compression Types
-/// - `None` (0): No compression, returns a copy of input
+/// - `None` (0): No compression, copies input to output
 /// - `Lzo` (1): LZO compression via lzokay library
 /// - `Zlib` (2): Zlib/deflate compression via flate2
 ///
 /// # Validation
-/// Verifies that the decompressed size exactly matches `expected_size`.
+/// Verifies that the decompressed size exactly matches `expected_size`. The output
+/// buffer will be resized to `expected_size` before decompression.
 ///
 /// # Errors
 /// Returns an error if decompression fails or size validation fails.
-pub fn decompress_payload(
+pub fn decompress_payload_into(
+    output: &mut Vec<u8>,
     payload: &[u8],
     compression_type: CompressionType,
     expected_size: u64,
-) -> Result<Vec<u8>> {
-    let decompressed = match compression_type {
+) -> Result<()> {
+    output.clear();
+    output.resize(expected_size as usize, 0);
+
+    match compression_type {
         CompressionType::None => {
             trace!("No compression, copying {} bytes", payload.len());
-            payload.to_vec()
+            if payload.len() as u64 != expected_size {
+                return Err(MdictError::SizeMismatch {
+                    context: "no-compression payload".to_string(),
+                    expected: expected_size,
+                    found: payload.len() as u64,
+                });
+            }
+            output.copy_from_slice(payload);
         }
         CompressionType::Lzo => {
             trace!("Decompressing with LZO: {} bytes -> {} bytes (expected)", payload.len(), expected_size);
-            let mut output = vec![0u8; expected_size as usize];
-            lzokay_decompress(payload, &mut output)
+            let bytes_written = lzokay_decompress(payload, output)
                 .map_err(|e| MdictError::DecompressionError(format!("LZO decompression failed: {}", e)))?;
-            output
+            if bytes_written as u64 != expected_size {
+                 return Err(MdictError::SizeMismatch {
+                    context: "LZO decompressed block".to_string(),
+                    expected: expected_size,
+                    found: bytes_written as u64,
+                });
+            }
         }
         CompressionType::Zlib => {
             trace!("Decompressing with Zlib: {} bytes -> {} bytes (expected)", payload.len(), expected_size);
-            let mut output = Vec::with_capacity(expected_size as usize);
             let mut decoder = ZlibDecoder::new(payload);
-            decoder
-                .read_to_end(&mut output)
+            decoder.read_exact(output)
                 .map_err(|e| MdictError::DecompressionError(format!("Zlib decompression failed: {}", e)))?;
-            output
         }
     };
 
-    // Validate decompressed size
-    if decompressed.len() as u64 != expected_size {
-        return Err(MdictError::SizeMismatch {
-            context: "decompressed block".to_string(),
-            expected: expected_size,
-            found: decompressed.len() as u64,
-        });
-    }
-
-    Ok(decompressed)
+    Ok(())
 }
