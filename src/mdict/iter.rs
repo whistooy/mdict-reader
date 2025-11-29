@@ -30,9 +30,9 @@ use super::types::models::RecordData;
 
 /// Iterator over dictionary keys and their record IDs.
 ///
-/// This is the lightest-weight iterator, only decoding key blocks without
-/// touching record data. It yields `Result<(String, u64)>` pairs where the
-/// u64 is the record's offset in the virtual decompressed stream.
+/// Lightweight iterator that only decodes key blocks without touching record data.
+/// It yields `Result<(String, u64)>` pairs where the u64 is the record's offset in
+/// the virtual decompressed stream.
 ///
 /// Created by [`MdictReader::iter_keys()`](crate::MdictReader::iter_keys).
 pub struct KeysIterator<'a, T: FileType> {
@@ -158,8 +158,8 @@ pub struct RecordIterator<'a, T: FileType> {
 impl<'a, T: FileType> RecordIterator<'a, T> {
     /// Ensure the record block containing `entry_id` is loaded.
     ///
-    /// This is amortized O(1) by reusing `cached_block_index` and only
-    /// advancing forward as `entry_id` increases.
+    /// Amortized O(1) by reusing `cached_block_index` and only advancing forward
+    /// as `entry_id` increases.
     fn ensure_block(&mut self, entry_id: u64) -> Result<()> {
         let record_blocks = self.reader.record_blocks();
 
