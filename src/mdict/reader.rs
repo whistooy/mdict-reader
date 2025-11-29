@@ -9,7 +9,7 @@ use super::iter::{KeysIterator, RecordIterator};
 use super::layout;
 use super::layout::blocks;
 use super::types::error::{MdictError, Result};
-use super::types::filetypes::FileType;
+use super::types::file_type::FileType;
 use super::types::models::{
     BlockMeta, EncryptionFlags, MasterKey, MdictEncoding, MdictHeader, MdictMetadata, MdictVersion,
     RecordData, StyleSheet, parse_stylesheet,

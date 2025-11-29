@@ -19,7 +19,7 @@ use std::cmp::min;
 
 use crate::mdict::codec::{compression, crypto};
 use crate::mdict::types::error::{MdictError, Result};
-use crate::mdict::types::filetypes::FileType;
+use crate::mdict::types::file_type::FileType;
 use crate::mdict::types::models::*;
 use crate::mdict::utils;
 

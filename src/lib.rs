@@ -56,7 +56,7 @@ pub use mdict::{
     // The error types
     types::error::{MdictError, Result},
     // The file type markers for specialization
-    types::filetypes::{FileType, Mdd, Mdx},
+    types::file_type::{FileType, Mdd, Mdx},
     // Models are essential for understanding the data
     types::models::{EncryptionFlags, RecordData},
 };

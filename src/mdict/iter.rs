@@ -25,7 +25,7 @@ use std::iter::Peekable;
 use super::layout::blocks;
 use super::reader::MdictReader;
 use super::types::error::{MdictError, Result};
-use super::types::filetypes::FileType;
+use super::types::file_type::FileType;
 use super::types::models::RecordData;
 
 /// Iterator over dictionary keys and their record IDs.
