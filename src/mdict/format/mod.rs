@@ -20,7 +20,7 @@
 //! │  (version-      │
 //! │   specific)     │
 //! ├─────────────────┤
-//! │  Content Blocks │ ← content::decode_block()
+//! │  Content Blocks │ ← content::decode_block_into()
 //! │  (compressed,   │
 //! │   encrypted)    │
 //! └─────────────────┘
