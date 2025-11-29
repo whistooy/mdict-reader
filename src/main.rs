@@ -242,13 +242,10 @@ fn extract_mdx_content(
             }
         };
 
-        // Extract the actual content, handling redirects
-        let def = match record_data {
+        // Extract the record content, preserving redirects as explicit markers.
+        let record_text = match record_data {
             RecordData::Content(content) => content,
-            RecordData::Redirect(target) => {
-                // For redirects, output a reference to the target
-                format!("@@@LINK={}", target)
-            }
+            RecordData::Redirect(target) => format!("@@@LINK={}", target),
         };
 
         if !first_entry {
@@ -258,15 +255,16 @@ fn extract_mdx_content(
 
         match format {
             Format::Text => {
-                let trimmed_def = def.trim_end();
-                write!(out, "{}\r\n{}\r\n</>", key, trimmed_def)?;
+                let trimmed = record_text.trim_end();
+                write!(out, "{}\r\n{}\r\n</>", key, trimmed)?;
             }
             Format::Jsonl => {
-                let json_string =
-                    serde_json::to_string(&serde_json::json!({ "key": key, "record": def }))
-                        .map_err(|e| {
-                            MdictError::InvalidFormat(format!("JSON serialization failed: {}", e))
-                        })?;
+                let json_string = serde_json::to_string(
+                    &serde_json::json!({ "key": key, "record": record_text }),
+                )
+                .map_err(|e| {
+                    MdictError::InvalidFormat(format!("JSON serialization failed: {}", e))
+                })?;
                 write!(out, "{}", json_string)?;
             }
         };
