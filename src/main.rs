@@ -19,7 +19,7 @@ const MDD_RESOURCES_SUBDIR: &str = "resources";
 /// Supports both MDX (dictionary definitions) and MDD (resource data) files
 /// across all MDict format versions (1.x, 2.x, 3.x).
 #[derive(Parser, Debug)]
-#[command(name = "mdict-tool", version, about, author)]
+#[command(name = "mdict-reader", version, about, author)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -139,7 +139,7 @@ fn run_extract(args: ExtractArgs) {
     }
     let mut tasks = Vec::new();
 
-    // 1. Build a list of files to process. This is clear and stays the same.
+    // Build a list of files to process.
     if args.all {
         if args.file.extension().and_then(|s| s.to_str()) != Some("mdx") {
             eprint_and_exit("The '--all' flag requires the main .mdx file as input.");
@@ -158,7 +158,7 @@ fn run_extract(args: ExtractArgs) {
         }
     }
 
-    // 2. Create the top-level output directory if specified.
+    // Create the top-level output directory if specified.
     if let Some(output_dir) = &args.output
         && fs::create_dir_all(output_dir).is_err()
     {
@@ -168,7 +168,7 @@ fn run_extract(args: ExtractArgs) {
         ));
     }
 
-    // 3. Execute all tasks in a single, unified loop.
+    // Execute all tasks in a single loop.
     for (task, path) in tasks {
         let mdict = open_mdict_or_exit(&path, &args.shared);
         match (task, mdict) {
@@ -184,7 +184,7 @@ fn run_extract(args: ExtractArgs) {
                 }
             }
             (Task::Mdd, Mdict::Mdd(reader)) => {
-                // This is the clean, consolidated logic for determining the MDD target directory.
+                // Determine where to place extracted resources.
                 let base_output_path = args
                     .output
                     .as_deref()
@@ -467,7 +467,7 @@ fn print_samples<T: FileType>(
 
 /// Prints the application banner with file information.
 fn print_banner(file: &Path, has_passcode: bool) {
-    println!("\n{:=<60}\nMDict Tool\n{:=<60}", "", "");
+    println!("\n{:=<60}\nmdict-reader\n{:=<60}", "", "");
     println!("File: {}", file.display());
     if has_passcode {
         println!("Passcode: provided");
