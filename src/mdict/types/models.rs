@@ -166,20 +166,20 @@ impl TryFrom<f32> for MdictVersion {
 /// V3 files use explicit 32-bit type markers to identify different sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum V3BlockType {
-    RecordData = 0x01000000,
-    RecordIndex = 0x02000000,
-    KeyData = 0x03000000,
-    KeyIndex = 0x04000000,
+    RecordData,
+    RecordIndex,
+    KeyData,
+    KeyIndex,
 }
 
 impl TryFrom<u32> for V3BlockType {
     type Error = MdictError;
     fn try_from(value: u32) -> Result<Self> {
         match value {
-            0x01000000 => Ok(Self::RecordData),
-            0x02000000 => Ok(Self::RecordIndex),
-            0x03000000 => Ok(Self::KeyData),
-            0x04000000 => Ok(Self::KeyIndex),
+            1 => Ok(Self::RecordData),
+            2 => Ok(Self::RecordIndex),
+            3 => Ok(Self::KeyData),
+            4 => Ok(Self::KeyIndex),
             _ => Err(MdictError::InvalidFormat(format!(
                 "Unknown v3 block type: {:#010x}",
                 value

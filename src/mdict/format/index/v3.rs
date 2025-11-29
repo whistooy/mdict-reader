@@ -7,7 +7,7 @@
 //! - Index blocks are compressed and contain metadata for data blocks
 //! - Data blocks have inline size headers that may conflict with index
 
-use byteorder::{BigEndian, ReadBytesExt};
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use log::{debug, info, trace, warn};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -339,7 +339,7 @@ pub fn scan_block_offsets<R: Read + Seek>(
     ];
 
     // Scan through all blocks until EOF
-    while let Ok(block_type_raw) = file.read_u32::<BigEndian>() {
+    while let Ok(block_type_raw) = file.read_u32::<LittleEndian>() {
         let block_type = V3BlockType::try_from(block_type_raw)?;
         let block_size = file.read_u64::<BigEndian>()?;
         let block_data_offset = file.stream_position()?;
