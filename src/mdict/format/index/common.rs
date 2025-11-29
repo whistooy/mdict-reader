@@ -5,7 +5,7 @@
 //! full decoding.
 
 use crate::mdict::types::error::{MdictError, Result};
-use crate::mdict::types::models::{MdictVersion, MdictEncoding};
+use crate::mdict::types::models::{MdictEncoding, MdictVersion};
 use crate::mdict::utils;
 
 /// Skips a length-prefixed text field without decoding its content.
@@ -25,19 +25,21 @@ use crate::mdict::utils;
 pub fn skip_text(reader: &mut &[u8], version: MdictVersion, encoding: MdictEncoding) -> Result<()> {
     // Read the length prefix (number of text units, not bytes)
     let text_len_units = utils::read_small_number(reader, version.small_number_width())?;
-    
+
     // V1 uses no null terminator, V2/V3 include a terminator unit
     let terminator_units = match version {
         MdictVersion::V1 => 0,
         MdictVersion::V2 | MdictVersion::V3 => 1,
     };
-    
+
     // Calculate total bytes: (text + terminator) * bytes_per_unit
     let total_bytes = ((text_len_units + terminator_units) as usize) * utils::unit_width(encoding);
 
     // Validate sufficient data remains
     if reader.len() < total_bytes {
-        return Err(MdictError::InvalidFormat("Incomplete key text in index".to_string()));
+        return Err(MdictError::InvalidFormat(
+            "Incomplete key text in index".to_string(),
+        ));
     }
 
     // Advance the reader past the text field

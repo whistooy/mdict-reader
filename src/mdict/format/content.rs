@@ -11,11 +11,11 @@
 //! Reader (I/O) → Content (this module) → Codec (crypto/compression)
 //! ```
 
-use std::cmp::min;
 use adler2::adler32_slice;
-use byteorder::{ByteOrder, BigEndian, LittleEndian};
+use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use log::trace;
 use ripemd::{Digest, Ripemd128};
+use std::cmp::min;
 
 use crate::mdict::codec::{compression, crypto};
 use crate::mdict::types::error::{MdictError, Result};
@@ -50,7 +50,9 @@ pub fn decode_block_into(
     version: MdictVersion,
 ) -> Result<()> {
     if raw_block.len() < 8 {
-        return Err(MdictError::InvalidFormat("Block too short (minimum 8 bytes required)".to_string()));
+        return Err(MdictError::InvalidFormat(
+            "Block too short (minimum 8 bytes required)".to_string(),
+        ));
     }
 
     // Step 1: Parse 8-byte block header
@@ -92,7 +94,10 @@ pub fn decode_block_into(
     // Step 4: Validate checksum (v3 before decompression, v1/v2 after)
     if version == MdictVersion::V3 {
         let checksum_actual = adler32_slice(payload);
-        trace!("V3 block checksum on decrypted data: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
+        trace!(
+            "V3 block checksum on decrypted data: expected={:#010x}, actual={:#010x}",
+            checksum_expected, checksum_actual
+        );
         if checksum_actual != checksum_expected {
             return Err(MdictError::ChecksumMismatch {
                 expected: checksum_expected,
@@ -111,7 +116,10 @@ pub fn decode_block_into(
 
     if version != MdictVersion::V3 {
         let checksum_actual = adler32_slice(output.as_slice());
-        trace!("V1/V2 block checksum on decrypted data: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
+        trace!(
+            "V1/V2 block checksum on decrypted data: expected={:#010x}, actual={:#010x}",
+            checksum_expected, checksum_actual
+        );
         if checksum_actual != checksum_expected {
             return Err(MdictError::ChecksumMismatch {
                 expected: checksum_expected,
@@ -172,17 +180,19 @@ pub fn parse_record<T: FileType>(
         end,
         end - start
     );
-    
+
     let start = start as usize;
     let end = end as usize;
-    
+
     if end > block_bytes.len() {
         return Err(MdictError::InvalidFormat(format!(
             "Record location [{}..{}] is out of bounds for block of size {}",
-            start, end, block_bytes.len()
+            start,
+            end,
+            block_bytes.len()
         )));
     }
-    
+
     let record_slice = &block_bytes[start..end];
     T::process_record(record_slice, encoding, stylesheet)
 }
@@ -202,7 +212,7 @@ fn read_null_terminated_string(
     encoding: &'static encoding_rs::Encoding,
 ) -> Result<String> {
     let width = utils::unit_width(encoding);
-    
+
     // Find null terminator position (depends on encoding width)
     let end_pos = if width == 2 {
         // UTF-16: look for double-null (0x0000)
@@ -212,18 +222,16 @@ fn read_null_terminated_string(
             .map(|chunk_index| chunk_index * 2)
     } else {
         // Single-byte encodings: look for single null
-        reader
-            .iter()
-            .position(|&byte| byte == 0)
+        reader.iter().position(|&byte| byte == 0)
     }
     .ok_or_else(|| MdictError::InvalidFormat("Missing null terminator in string".to_string()))?;
-    
+
     // Decode the text portion (excluding terminator)
     let text_bytes = &reader[..end_pos];
     let (decoded, _, _) = encoding.decode(text_bytes);
-    
+
     // Advance reader past text and terminator
     *reader = &reader[end_pos + width..];
-    
+
     Ok(decoded.into_owned())
 }

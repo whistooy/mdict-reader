@@ -6,22 +6,20 @@
 //! - Extracting metadata (title, encoding, encryption flags, etc.)
 //! - Deriving master decryption keys from passcodes or UUIDs
 
-use std::collections::HashMap;
-use std::io::Read;
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
-use encoding_rs::UTF_16LE;
-use quick_xml::{events::Event, Reader};
-use adler2::adler32_slice;
-use hex;
-use log::{debug, info, warn, trace};
 use crate::mdict::codec::crypto;
 use crate::mdict::types::{
     error::{MdictError, Result},
-    models::{
-        EncryptionFlags, MdictHeader, MdictMetadata, MdictVersion, MdictEncoding, MasterKey,
-    },
+    models::{EncryptionFlags, MasterKey, MdictEncoding, MdictHeader, MdictMetadata, MdictVersion},
 };
 use crate::mdict::utils;
+use adler2::adler32_slice;
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+use encoding_rs::UTF_16LE;
+use hex;
+use log::{debug, info, trace, warn};
+use quick_xml::{Reader, events::Event};
+use std::collections::HashMap;
+use std::io::Read;
 
 /// Parses the MDict file header from the beginning of the file.
 ///
@@ -38,10 +36,7 @@ use crate::mdict::utils;
 ///
 /// # Returns
 /// A tuple of (version, encoding, encryption_flags, master_key, metadata)
-pub fn parse<R: Read>(
-    file: &mut R,
-    passcode: Option<(&str, &str)>,
-) -> Result<MdictHeader> {
+pub fn parse<R: Read>(file: &mut R, passcode: Option<(&str, &str)>) -> Result<MdictHeader> {
     info!("Parsing MDict header");
 
     // Step 1: Read header length
@@ -55,7 +50,10 @@ pub fn parse<R: Read>(
     // Step 3: Verify header integrity
     let checksum_expected = file.read_u32::<LittleEndian>()?;
     let checksum_actual = adler32_slice(header_bytes.as_slice());
-    trace!("Header checksum: expected={:#010x}, actual={:#010x}", checksum_expected, checksum_actual);
+    trace!(
+        "Header checksum: expected={:#010x}, actual={:#010x}",
+        checksum_expected, checksum_actual
+    );
     if checksum_actual != checksum_expected {
         return Err(MdictError::ChecksumMismatch {
             expected: checksum_expected,
@@ -89,7 +87,7 @@ pub fn parse<R: Read>(
 
     // Step 7: Build header structure from attributes
     let (version, encoding, encryption_flags, metadata) = build_header_from_attributes(&attrs)?;
-    
+
     // Step 8: Validate encoding/version consistency
     if version == MdictVersion::V3 && !header_bytes.ends_with(&[0, 0]) {
         debug!(
@@ -104,17 +102,17 @@ pub fn parse<R: Read>(
     } else {
         warn!(
             "Potential header encoding mismatch! Guessed encoding based on terminator ('{}'), but parsed version is: {}. The file may not be parsed correctly.",
-            if header_bytes.ends_with(&[0, 0]) { "ends with 0x0000" } else { "no 0x0000 suffix" },
+            if header_bytes.ends_with(&[0, 0]) {
+                "ends with 0x0000"
+            } else {
+                "no 0x0000 suffix"
+            },
             metadata.engine_version
         );
     }
 
     // Step 9: Derive master decryption key
-    let master_key = try_derive_master_key(
-        passcode,
-        metadata.uuid.as_ref(),
-        version,
-    )?;
+    let master_key = try_derive_master_key(passcode, metadata.uuid.as_ref(), version)?;
 
     info!(
         "Header parsed successfully: version={}, title='{}', encoding={}, encrypted=(blocks={}, index={})",
@@ -144,19 +142,40 @@ fn parse_xml_attributes(xml: &str) -> Result<HashMap<String, String>> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                return e.attributes()
+                return e
+                    .attributes()
                     .map(|attr_result| {
-                        let attr = attr_result.map_err(|e| MdictError::InvalidFormat(format!("Failed to parse XML attribute: {}", e)))?;
+                        let attr = attr_result.map_err(|e| {
+                            MdictError::InvalidFormat(format!(
+                                "Failed to parse XML attribute: {}",
+                                e
+                            ))
+                        })?;
                         let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
-                        let value = attr.unescape_value()
-                            .map_err(|e| MdictError::InvalidFormat(format!("Failed to decode XML value: {}", e)))?
+                        let value = attr
+                            .unescape_value()
+                            .map_err(|e| {
+                                MdictError::InvalidFormat(format!(
+                                    "Failed to decode XML value: {}",
+                                    e
+                                ))
+                            })?
                             .into_owned();
                         Ok((key, value))
                     })
                     .collect();
             }
-            Ok(Event::Eof) => return Err(MdictError::InvalidFormat("No root element found in header XML".to_string())),
-            Err(e) => return Err(MdictError::InvalidFormat(format!("Failed to read header XML: {}", e))),
+            Ok(Event::Eof) => {
+                return Err(MdictError::InvalidFormat(
+                    "No root element found in header XML".to_string(),
+                ));
+            }
+            Err(e) => {
+                return Err(MdictError::InvalidFormat(format!(
+                    "Failed to read header XML: {}",
+                    e
+                )));
+            }
             _ => {}
         }
         buf.clear();
@@ -166,22 +185,24 @@ fn parse_xml_attributes(xml: &str) -> Result<HashMap<String, String>> {
 /// Constructs header components from parsed XML attributes.
 ///
 /// Applies defaults for missing optional fields and validates required fields.
-fn build_header_from_attributes(attrs: &HashMap<String, String>) -> Result<(MdictVersion, MdictEncoding, EncryptionFlags, MdictMetadata)> {
+fn build_header_from_attributes(
+    attrs: &HashMap<String, String>,
+) -> Result<(MdictVersion, MdictEncoding, EncryptionFlags, MdictMetadata)> {
     // Extract and parse version number
     let version_str = attrs
         .get("GeneratedByEngineVersion")
         .map(String::as_str)
         .unwrap_or("1.0");
     let version_f32: f32 = version_str.parse().map_err(|e| {
-        MdictError::InvalidFormat(format!(
-            "Could not parse 'GeneratedByEngineVersion': {}",
-            e
-        ))
+        MdictError::InvalidFormat(format!("Could not parse 'GeneratedByEngineVersion': {}", e))
     })?;
 
     // Convert to version enum for type-safe handling
     let version_enum = MdictVersion::try_from(version_f32)?;
-    debug!("MDict version: {} (parsed as {:?})", version_str, version_enum);
+    debug!(
+        "MDict version: {} (parsed as {:?})",
+        version_str, version_enum
+    );
 
     // Extract text encoding (defaults to UTF-8)
     let encoding = attrs
@@ -247,7 +268,7 @@ fn try_derive_master_key(
 
         if reg_code.len() != 16 {
             return Err(MdictError::DecryptionError(
-                "Registration code must be exactly 16 bytes (32 hex chars)".to_string()
+                "Registration code must be exactly 16 bytes (32 hex chars)".to_string(),
             ));
         }
 

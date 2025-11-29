@@ -22,11 +22,11 @@
 
 use std::iter::Peekable;
 
-use super::reader::MdictReader;
 use super::format::content;
+use super::reader::MdictReader;
 use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
-use super::types::models::{RecordData};
+use super::types::models::RecordData;
 
 /// Iterator over dictionary keys and their record IDs.
 ///
@@ -111,11 +111,8 @@ impl<'a, T: FileType> KeysIterator<'a, T> {
         let mut slice = &self.cached_block_bytes[self.cached_block_pos..];
         let before = slice.len();
 
-        let result = content::read_next_key_entry(
-            &mut slice,
-            self.reader.version(),
-            self.reader.encoding(),
-        );
+        let result =
+            content::read_next_key_entry(&mut slice, self.reader.version(), self.reader.encoding());
 
         let after = slice.len();
         self.cached_block_pos += before - after;
@@ -126,7 +123,7 @@ impl<'a, T: FileType> KeysIterator<'a, T> {
 
 impl<'a, T: FileType> Iterator for KeysIterator<'a, T> {
     type Item = Result<(String, u64)>;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         match self.ensure_block() {
             Ok(true) => {}
@@ -195,10 +192,7 @@ impl<'a, T: FileType> RecordIterator<'a, T> {
 
         let record_blocks = self.reader.record_blocks();
         let block = record_blocks.get(block_index).ok_or_else(|| {
-            MdictError::InvalidFormat(format!(
-                "Record block index {} out of range",
-                block_index
-            ))
+            MdictError::InvalidFormat(format!("Record block index {} out of range", block_index))
         })?;
 
         self.reader
@@ -219,10 +213,7 @@ impl<'a, T: FileType> RecordIterator<'a, T> {
 
         let record_blocks = self.reader.record_blocks();
         let block = record_blocks.get(block_idx).ok_or_else(|| {
-            MdictError::InvalidFormat(format!(
-                "Record block index {} out of range",
-                block_idx
-            ))
+            MdictError::InvalidFormat(format!("Record block index {} out of range", block_idx))
         })?;
 
         // Determine end offset using the next key's entry_id, or block end.

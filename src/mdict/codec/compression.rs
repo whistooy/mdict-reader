@@ -49,11 +49,16 @@ pub fn decompress_payload_into(
             output.copy_from_slice(payload);
         }
         CompressionType::Lzo => {
-            trace!("Decompressing with LZO: {} bytes -> {} bytes (expected)", payload.len(), expected_size);
-            let bytes_written = lzokay_decompress(payload, output)
-                .map_err(|e| MdictError::DecompressionError(format!("LZO decompression failed: {}", e)))?;
+            trace!(
+                "Decompressing with LZO: {} bytes -> {} bytes (expected)",
+                payload.len(),
+                expected_size
+            );
+            let bytes_written = lzokay_decompress(payload, output).map_err(|e| {
+                MdictError::DecompressionError(format!("LZO decompression failed: {}", e))
+            })?;
             if bytes_written as u64 != expected_size {
-                 return Err(MdictError::SizeMismatch {
+                return Err(MdictError::SizeMismatch {
                     context: "LZO decompressed block".to_string(),
                     expected: expected_size,
                     found: bytes_written as u64,
@@ -61,10 +66,15 @@ pub fn decompress_payload_into(
             }
         }
         CompressionType::Zlib => {
-            trace!("Decompressing with Zlib: {} bytes -> {} bytes (expected)", payload.len(), expected_size);
+            trace!(
+                "Decompressing with Zlib: {} bytes -> {} bytes (expected)",
+                payload.len(),
+                expected_size
+            );
             let mut decoder = ZlibDecoder::new(payload);
-            decoder.read_exact(output)
-                .map_err(|e| MdictError::DecompressionError(format!("Zlib decompression failed: {}", e)))?;
+            decoder.read_exact(output).map_err(|e| {
+                MdictError::DecompressionError(format!("Zlib decompression failed: {}", e))
+            })?;
         }
     };
 

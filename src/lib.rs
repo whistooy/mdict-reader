@@ -53,10 +53,10 @@ pub mod mdict;
 pub use mdict::{
     // The core, specialized reader struct
     MdictReader,
-    // The file type markers for specialization
-    types::filetypes::{FileType, Mdd, Mdx},
     // The error types
     types::error::{MdictError, Result},
+    // The file type markers for specialization
+    types::filetypes::{FileType, Mdd, Mdx},
     // Models are essential for understanding the data
     types::models::{EncryptionFlags, RecordData},
 };
@@ -95,12 +95,12 @@ impl Mdict {
         let path = path.as_ref();
 
         match path.extension().and_then(|s| s.to_str()) {
-            Some(ext) if ext.eq_ignore_ascii_case("mdx") => {
-                Ok(Mdict::Mdx(MdictReader::<Mdx>::new(path, passcode, user_encoding)?))
-            }
-            Some(ext) if ext.eq_ignore_ascii_case("mdd") => {
-                Ok(Mdict::Mdd(MdictReader::<Mdd>::new(path, passcode, user_encoding)?))
-            }
+            Some(ext) if ext.eq_ignore_ascii_case("mdx") => Ok(Mdict::Mdx(
+                MdictReader::<Mdx>::new(path, passcode, user_encoding)?,
+            )),
+            Some(ext) if ext.eq_ignore_ascii_case("mdd") => Ok(Mdict::Mdd(
+                MdictReader::<Mdd>::new(path, passcode, user_encoding)?,
+            )),
             _ => Err(MdictError::InvalidFormat(
                 "File must have a .mdx or .mdd extension for auto-detection".to_string(),
             )),

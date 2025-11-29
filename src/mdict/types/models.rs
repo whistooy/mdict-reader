@@ -5,9 +5,9 @@
 //! - Block and entry information
 //! - Version and type enumerations
 
-use std::collections::HashMap;
-use encoding_rs::Encoding;
 use super::error::{MdictError, Result};
+use encoding_rs::Encoding;
+use std::collections::HashMap;
 
 /// Type alias for the text encoding used in MDict files.
 ///
@@ -83,7 +83,7 @@ pub struct MdictHeader {
 pub fn parse_stylesheet(stylesheet_str: &str) -> StyleSheet {
     let mut map = HashMap::new();
     let lines: Vec<&str> = stylesheet_str.lines().collect();
-    
+
     // Process in triplets (style_id, begin_tag, end_tag)
     let mut i = 0;
     while i + 2 < lines.len() {
@@ -94,10 +94,9 @@ pub fn parse_stylesheet(stylesheet_str: &str) -> StyleSheet {
         }
         i += 3;
     }
-    
+
     map
 }
-
 
 /// Metadata describing a single compressed data block.
 ///
@@ -181,9 +180,10 @@ impl TryFrom<u32> for V3BlockType {
             0x02000000 => Ok(Self::RecordIndex),
             0x03000000 => Ok(Self::KeyData),
             0x04000000 => Ok(Self::KeyIndex),
-            _ => Err(MdictError::InvalidFormat(
-                format!("Unknown v3 block type: {:#010x}", value)
-            )),
+            _ => Err(MdictError::InvalidFormat(format!(
+                "Unknown v3 block type: {:#010x}",
+                value
+            ))),
         }
     }
 }
@@ -217,7 +217,10 @@ impl TryFrom<u8> for CompressionType {
             0 => Ok(Self::None),
             1 => Ok(Self::Lzo),
             2 => Ok(Self::Zlib),
-            _ => Err(MdictError::InvalidFormat(format!("Unknown compression type: {}", value))),
+            _ => Err(MdictError::InvalidFormat(format!(
+                "Unknown compression type: {}",
+                value
+            ))),
         }
     }
 }
@@ -236,7 +239,10 @@ impl TryFrom<u8> for EncryptionType {
             0 => Ok(Self::None),
             1 => Ok(Self::Fast),
             2 => Ok(Self::Salsa20),
-            _ => Err(MdictError::InvalidFormat(format!("Unknown encryption type: {}", value))),
+            _ => Err(MdictError::InvalidFormat(format!(
+                "Unknown encryption type: {}",
+                value
+            ))),
         }
     }
 }

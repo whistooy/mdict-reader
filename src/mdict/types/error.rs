@@ -48,7 +48,7 @@ pub enum MdictError {
     /// The file is structurally invalid or does not conform to the MDict format specification.
     #[error("Invalid format: {0}")]
     InvalidFormat(String),
-    
+
     /// The file is encrypted, but no passcode was provided to derive the decryption key.
     #[error("Encrypted file requires a passcode, but none was provided.")]
     PasscodeRequired,

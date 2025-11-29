@@ -101,32 +101,28 @@ fn run_info(file: &Path, shared_args: &SharedArgs) {
         Mdict::Mdx(reader) => {
             println!("\nFile Type: MDX (Dictionary)");
             print_common_info(&reader);
-            print_samples(&reader, "Definitions", |record_data| {
-                match record_data {
-                    RecordData::Content(definition) => {
-                        let mut truncated = definition.trim().replace(['\n', '\r'], " ");
-                        if truncated.chars().count() > 100 {
-                            truncated = truncated.chars().take(100).collect::<String>() + "...";
-                        }
-                        println!("     Def: {}", truncated);
+            print_samples(&reader, "Definitions", |record_data| match record_data {
+                RecordData::Content(definition) => {
+                    let mut truncated = definition.trim().replace(['\n', '\r'], " ");
+                    if truncated.chars().count() > 100 {
+                        truncated = truncated.chars().take(100).collect::<String>() + "...";
                     }
-                    RecordData::Redirect(target) => {
-                        println!("     Redirect → {}", target);
-                    }
+                    println!("     Def: {}", truncated);
+                }
+                RecordData::Redirect(target) => {
+                    println!("     Redirect → {}", target);
                 }
             });
         }
         Mdict::Mdd(reader) => {
             println!("\nFile Type: MDD (Resource Data)");
             print_common_info(&reader);
-            print_samples(&reader, "Resource Sizes", |record_data| {
-                match record_data {
-                    RecordData::Content(data) => {
-                        println!("     Resource Size: {} bytes", data.len());
-                    }
-                    RecordData::Redirect(target) => {
-                        println!("     Redirect → {}", target);
-                    }
+            print_samples(&reader, "Resource Sizes", |record_data| match record_data {
+                RecordData::Content(data) => {
+                    println!("     Resource Size: {} bytes", data.len());
+                }
+                RecordData::Redirect(target) => {
+                    println!("     Redirect → {}", target);
                 }
             });
         }
@@ -134,11 +130,13 @@ fn run_info(file: &Path, shared_args: &SharedArgs) {
     println!();
 }
 
-
 /// Executes the 'extract' command with a unified, clean logic flow.
 fn run_extract(args: ExtractArgs) {
     #[derive(Debug)]
-    enum Task { Mdx, Mdd }
+    enum Task {
+        Mdx,
+        Mdd,
+    }
     let mut tasks = Vec::new();
 
     // 1. Build a list of files to process. This is clear and stays the same.
@@ -147,7 +145,11 @@ fn run_extract(args: ExtractArgs) {
             eprint_and_exit("The '--all' flag requires the main .mdx file as input.");
         }
         tasks.push((Task::Mdx, args.file.clone()));
-        tasks.extend(find_companion_mdds(&args.file).into_iter().map(|p| (Task::Mdd, p)));
+        tasks.extend(
+            find_companion_mdds(&args.file)
+                .into_iter()
+                .map(|p| (Task::Mdd, p)),
+        );
     } else {
         match args.file.extension().and_then(|s| s.to_str()) {
             Some("mdx") => tasks.push((Task::Mdx, args.file)),
@@ -160,46 +162,69 @@ fn run_extract(args: ExtractArgs) {
     if let Some(output_dir) = &args.output
         && fs::create_dir_all(output_dir).is_err()
     {
-        eprint_and_exit(format!("Could not create output directory: {}", output_dir.display()));
+        eprint_and_exit(format!(
+            "Could not create output directory: {}",
+            output_dir.display()
+        ));
     }
-    
+
     // 3. Execute all tasks in a single, unified loop.
     for (task, path) in tasks {
         let mdict = open_mdict_or_exit(&path, &args.shared);
         match (task, mdict) {
             (Task::Mdx, Mdict::Mdx(reader)) => {
-                if let Err(e) = extract_mdx_content(reader, &path, args.format, args.output.as_deref()) {
-                    eprintln!("   ERROR: Failed to extract MDX content from {}: {}", path.display(), e);
+                if let Err(e) =
+                    extract_mdx_content(reader, &path, args.format, args.output.as_deref())
+                {
+                    eprintln!(
+                        "   ERROR: Failed to extract MDX content from {}: {}",
+                        path.display(),
+                        e
+                    );
                 }
             }
             (Task::Mdd, Mdict::Mdd(reader)) => {
                 // This is the clean, consolidated logic for determining the MDD target directory.
-                let base_output_path = args.output.as_deref()
+                let base_output_path = args
+                    .output
+                    .as_deref()
                     .unwrap_or_else(|| path.parent().unwrap_or_else(|| Path::new(".")));
 
                 // Use a subdirectory if doing a full extraction (`--all`) OR if saving next to
                 // the source file (to avoid cluttering the source directory).
                 let use_subdir = args.all || args.output.is_none();
-                
+
                 let target_dir = if use_subdir {
                     base_output_path.join(MDD_RESOURCES_SUBDIR)
                 } else {
                     base_output_path.to_path_buf()
                 };
-                
+
                 if let Err(e) = extract_mdd_resources(reader, &path, &target_dir) {
-                    eprintln!("   ERROR: Failed to extract MDD resources from {}: {}", path.display(), e);
+                    eprintln!(
+                        "   ERROR: Failed to extract MDD resources from {}: {}",
+                        path.display(),
+                        e
+                    );
                 }
             }
-            _ => eprintln!("   WARN: Skipped mismatched file type for task: {}", path.display()),
+            _ => eprintln!(
+                "   WARN: Skipped mismatched file type for task: {}",
+                path.display()
+            ),
         }
     }
 }
 
 /// Extracts text content from an MDX (dictionary) file.
-fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, format: Format, output_dir: Option<&Path>) -> Result<(), MdictError> {
+fn extract_mdx_content(
+    reader: MdictReader<mdict_reader::Mdx>,
+    path: &Path,
+    format: Format,
+    output_dir: Option<&Path>,
+) -> Result<(), MdictError> {
     println!("\n-> Extracting MDX content from {}...", path.display());
-    
+
     let output_base = get_output_base_path(path, output_dir);
     let out_path = output_base.with_extension(match format {
         Format::Text => "txt",
@@ -235,12 +260,15 @@ fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, form
             Format::Text => {
                 let trimmed_def = def.trim_end();
                 write!(out, "{}\r\n{}\r\n</>", key, trimmed_def)?;
-            },
+            }
             Format::Jsonl => {
-                let json_string = serde_json::to_string(&serde_json::json!({ "key": key, "record": def }))
-                    .map_err(|e| MdictError::InvalidFormat(format!("JSON serialization failed: {}", e)))?;
+                let json_string =
+                    serde_json::to_string(&serde_json::json!({ "key": key, "record": def }))
+                        .map_err(|e| {
+                            MdictError::InvalidFormat(format!("JSON serialization failed: {}", e))
+                        })?;
                 write!(out, "{}", json_string)?;
-            },
+            }
         };
     }
     out.flush()?; // Ensure all buffered data is written
@@ -248,9 +276,18 @@ fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, form
     println!("   SUCCESS: Entries written to {}", out_path.display());
 
     if let Some(stylesheet) = &reader.metadata().stylesheet_raw {
-        let style_path = output_base.with_file_name(format!("{}_style.css", output_base.file_stem().unwrap_or_default().to_string_lossy()));
+        let style_path = output_base.with_file_name(format!(
+            "{}_style.css",
+            output_base
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        ));
         if fs::write(&style_path, stylesheet).is_err() {
-            eprintln!("   WARN: Could not write stylesheet to {}", style_path.display());
+            eprintln!(
+                "   WARN: Could not write stylesheet to {}",
+                style_path.display()
+            );
         } else {
             println!("   SUCCESS: Stylesheet written to {}", style_path.display());
         }
@@ -259,16 +296,23 @@ fn extract_mdx_content(reader: MdictReader<mdict_reader::Mdx>, path: &Path, form
 }
 
 /// Extracts binary resources from an MDD (resource data) file.
-fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, target_dir: &Path) -> Result<(), MdictError> {
+fn extract_mdd_resources(
+    reader: MdictReader<mdict_reader::Mdd>,
+    path: &Path,
+    target_dir: &Path,
+) -> Result<(), MdictError> {
     println!("\n-> Extracting MDD resources from {}...", path.display());
-    
+
     fs::create_dir_all(target_dir)?;
 
     let mut success_count = 0;
     for result in reader.iter_records() {
         let (key, record_data) = match result {
             Ok(pair) => pair,
-            Err(e) => { eprintln!("   WARN: Skipping resource due to error: {}", e); continue; }
+            Err(e) => {
+                eprintln!("   WARN: Skipping resource due to error: {}", e);
+                continue;
+            }
         };
 
         // Extract the actual data, handling redirects
@@ -281,15 +325,22 @@ fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, ta
         };
 
         let rel_path = key.replace('\\', std::path::MAIN_SEPARATOR_STR);
-        let out_path = target_dir.join(rel_path.strip_prefix(std::path::MAIN_SEPARATOR).unwrap_or(&rel_path));
-        
+        let out_path = target_dir.join(
+            rel_path
+                .strip_prefix(std::path::MAIN_SEPARATOR)
+                .unwrap_or(&rel_path),
+        );
+
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent)?;
         }
         if fs::write(&out_path, &data).is_ok() {
             success_count += 1;
         } else {
-            eprintln!("   WARN: Could not write resource to {}", out_path.display());
+            eprintln!(
+                "   WARN: Could not write resource to {}",
+                out_path.display()
+            );
         }
     }
     println!(
@@ -303,9 +354,11 @@ fn extract_mdd_resources(reader: MdictReader<mdict_reader::Mdd>, path: &Path, ta
 
 // ==================== Helper Functions ====================
 fn open_mdict_or_exit(file: &Path, args: &SharedArgs) -> Mdict {
-    let passcode_ref = args.passcode.as_deref()
-        .map(|s| s.split_once(',')
-            .unwrap_or_else(|| eprint_and_exit("Invalid passcode format. Expected 'REGCODE_HEX,EMAIL'.")));
+    let passcode_ref = args.passcode.as_deref().map(|s| {
+        s.split_once(',').unwrap_or_else(|| {
+            eprint_and_exit("Invalid passcode format. Expected 'REGCODE_HEX,EMAIL'.")
+        })
+    });
     match Mdict::open(file, passcode_ref, args.encoding.as_deref()) {
         Ok(mdict) => mdict,
         Err(e) => eprint_and_exit(format!("Failed to open '{}': {}", file.display(), e)),
@@ -329,7 +382,11 @@ fn find_companion_mdds(mdx_file: &Path) -> Vec<PathBuf> {
     let dir = mdx_file.parent().unwrap_or_else(|| Path::new("."));
     let mut i = 0;
     loop {
-        let suffix = if i == 0 { String::new() } else { format!(".{}", i) };
+        let suffix = if i == 0 {
+            String::new()
+        } else {
+            format!(".{}", i)
+        };
         let mdd_path = dir.join(format!("{base_name}{suffix}.mdd"));
         if mdd_path.exists() {
             companions.push(mdd_path);
@@ -372,7 +429,10 @@ fn print_common_info<T: FileType>(reader: &MdictReader<T>) {
     println!("  Version:     {}", metadata.engine_version);
     println!("  Encoding:    {}", reader.encoding().name());
     let enc_flags = reader.encryption_flags();
-    println!("  Encrypted:   blocks={}, index={}", enc_flags.encrypt_record_blocks, enc_flags.encrypt_key_index);
+    println!(
+        "  Encrypted:   blocks={}, index={}",
+        enc_flags.encrypt_record_blocks, enc_flags.encrypt_key_index
+    );
     if let Some(desc) = &metadata.description {
         println!("  Description: {}", desc);
     }
@@ -389,7 +449,10 @@ fn print_samples<T: FileType>(
     print_record_details: impl Fn(&RecordData<T::Record>),
 ) {
     let desired_sample_count = 10;
-    println!("\nSample Entries & {} (showing first up to {}):", description, desired_sample_count);
+    println!(
+        "\nSample Entries & {} (showing first up to {}):",
+        description, desired_sample_count
+    );
     for (i, entry_result) in reader.iter_records().take(desired_sample_count).enumerate() {
         match entry_result {
             Ok((key, record_data)) => {
@@ -406,7 +469,9 @@ fn print_samples<T: FileType>(
 fn print_banner(file: &Path, has_passcode: bool) {
     println!("\n{:=<60}\nMDict Tool\n{:=<60}", "", "");
     println!("File: {}", file.display());
-    if has_passcode { println!("Passcode: provided"); }
+    if has_passcode {
+        println!("Passcode: provided");
+    }
 }
 
 /// Prints an error message and exits with status code 1.

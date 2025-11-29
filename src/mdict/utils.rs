@@ -3,10 +3,10 @@
 //! This module provides helper functions for reading numeric values and
 //! handling text encodings according to the MDict format specification.
 
-use std::io::Read;
+use super::types::error::Result;
 use byteorder::{BigEndian, ReadBytesExt};
 use encoding_rs::{Encoding, UTF_16BE, UTF_16LE};
-use super::types::error::Result;
+use std::io::Read;
 
 /// Reads a big-endian integer from the reader.
 ///
@@ -64,12 +64,12 @@ pub fn unit_width(encoding: &'static Encoding) -> usize {
 pub fn parse_encoding(label: &str) -> &'static Encoding {
     let trimmed = label.trim();
 
-    let normalized_label = if trimmed.eq_ignore_ascii_case("GBK") || trimmed.eq_ignore_ascii_case("GB2312") {
-        "GB18030"
-    } else {
-        trimmed
-    };
+    let normalized_label =
+        if trimmed.eq_ignore_ascii_case("GBK") || trimmed.eq_ignore_ascii_case("GB2312") {
+            "GB18030"
+        } else {
+            trimmed
+        };
 
-    Encoding::for_label(normalized_label.as_bytes())
-        .unwrap_or(encoding_rs::UTF_8)
+    Encoding::for_label(normalized_label.as_bytes()).unwrap_or(encoding_rs::UTF_8)
 }

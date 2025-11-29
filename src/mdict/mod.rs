@@ -47,8 +47,8 @@ mod codec;
 pub mod format;
 
 // High-level public API
-pub mod reader;
 pub mod iter;
+pub mod reader;
 
 // Internal utilities
 mod utils;

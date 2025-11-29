@@ -7,22 +7,20 @@
 //! - Index blocks are compressed and contain metadata for data blocks
 //! - Data blocks have inline size headers that may conflict with index
 
+use byteorder::{BigEndian, ReadBytesExt};
+use log::{debug, info, trace, warn};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use byteorder::{BigEndian, ReadBytesExt};
-use log::{debug, info, warn, trace};
 
+use super::common;
+use crate::mdict::format::content;
 use crate::mdict::{
     types::{
         error::{MdictError, Result},
-        models::{
-            BlockMeta, BlockType, MdictEncoding, MdictVersion, MasterKey, V3BlockType,
-        },
+        models::{BlockMeta, BlockType, MasterKey, MdictEncoding, MdictVersion, V3BlockType},
     },
     utils,
 };
-use super::common;
-use crate::mdict::format::content;
 
 use super::ParseResult;
 
@@ -62,7 +60,8 @@ pub fn parse(
 
     // Step 3: Read data block headers and build final metadata
     let key_blocks = parse_block_metadata(file, key_data_offset, &key_index, BlockType::Key)?;
-    let record_blocks = parse_block_metadata(file, record_data_offset, &record_index, BlockType::Record)?;
+    let record_blocks =
+        parse_block_metadata(file, record_data_offset, &record_index, BlockType::Record)?;
 
     let total_record_decomp_size: u64 = record_blocks.iter().map(|b| b.decompressed_size).sum();
 
@@ -72,7 +71,12 @@ pub fn parse(
         record_blocks.len()
     );
 
-    Ok((key_blocks, record_blocks, total_record_decomp_size, num_entries))
+    Ok((
+        key_blocks,
+        record_blocks,
+        total_record_decomp_size,
+        num_entries,
+    ))
 }
 
 /// Parses data block headers and reconciles with index metadata.
@@ -96,27 +100,27 @@ fn parse_block_metadata<R: Read + Seek>(
     block_type: BlockType,
 ) -> Result<Vec<BlockMeta>> {
     info!("Reading v3.0 {} blocks metadata", block_type);
-    
+
     file.seek(SeekFrom::Start(offset))?;
-    
+
     // Read data section header
     let num_blocks = file.read_u32::<BigEndian>()? as usize;
     let _total_size = file.read_u64::<BigEndian>()?;
-    
+
     debug!("{} data section: {} blocks", block_type, num_blocks);
-    
+
     let mut blocks = Vec::with_capacity(num_blocks);
     let mut decompressed_offset = 0u64;
-    
+
     // Process each data block
     for i in 0..num_blocks {
         // Read inline size headers (8 bytes total)
         let inline_decomp = file.read_u32::<BigEndian>()? as u64;
         let inline_comp = file.read_u32::<BigEndian>()? as u64;
-      
+
         let mut compressed_size = inline_comp;
         let mut decompressed_size = inline_decomp;
-        
+
         // Reconcile inline headers with index metadata
         if let Some(&(index_block_size, index_decomp)) = index.get(i) {
             // Index size includes the 8-byte header; subtract it for payload size
@@ -130,12 +134,15 @@ fn parse_block_metadata<R: Read + Seek>(
                 decompressed_size = index_decomp;
             }
         } else {
-            return Err(MdictError::InvalidFormat(format!("Missing metadata for {} block {} in {} index", block_type, i, block_type)));
+            return Err(MdictError::InvalidFormat(format!(
+                "Missing metadata for {} block {} in {} index",
+                block_type, i, block_type
+            )));
         }
-        
+
         // Record the actual data offset (after headers)
         let file_offset = file.stream_position()?;
-        
+
         blocks.push(BlockMeta {
             compressed_size,
             decompressed_size,
@@ -144,12 +151,15 @@ fn parse_block_metadata<R: Read + Seek>(
         });
         // Skip to next block
         file.seek(SeekFrom::Current(compressed_size as i64))?;
-        
-        
+
         decompressed_offset += decompressed_size;
     }
-    
-    debug!("Parsed {} {} block metadata entries", blocks.len(), block_type);
+
+    debug!(
+        "Parsed {} {} block metadata entries",
+        blocks.len(),
+        block_type
+    );
     Ok(blocks)
 }
 
@@ -189,7 +199,11 @@ fn parse_index<R: Read + Seek>(
     let _total_size = file.read_u64::<BigEndian>()?;
     debug!("{} index contains {} sub-blocks", block_type, num_blocks);
 
-    let mut total_entries = if block_type == BlockType::Key { Some(0u64) } else { None };
+    let mut total_entries = if block_type == BlockType::Key {
+        Some(0u64)
+    } else {
+        None
+    };
     let mut index_pairs = Vec::new();
 
     // Process each compressed sub-block
@@ -199,7 +213,7 @@ fn parse_index<R: Read + Seek>(
 
         let mut compressed = vec![0u8; compressed_size as usize];
         file.read_exact(&mut compressed)?;
-        
+
         // Decompress and decrypt if necessary
         let mut decompressed = Vec::new();
         content::decode_block_into(
@@ -251,7 +265,11 @@ fn parse_index<R: Read + Seek>(
     if let Some(total) = total_entries {
         info!("Total entries from v3 index: {}", total);
     }
-    debug!("Parsed {} {} index entries for validation", index_pairs.len(), block_type);
+    debug!(
+        "Parsed {} {} index entries for validation",
+        index_pairs.len(),
+        block_type
+    );
     Ok((total_entries, index_pairs))
 }
 
@@ -281,8 +299,14 @@ fn parse_record_index<R: Seek + Read>(
     master_key: MasterKey,
     offset: u64,
 ) -> Result<Vec<(u64, u64)>> {
-    let (_, index_pairs) =
-        parse_index(file, version, encoding, master_key, offset, BlockType::Record)?;
+    let (_, index_pairs) = parse_index(
+        file,
+        version,
+        encoding,
+        master_key,
+        offset,
+        BlockType::Record,
+    )?;
     Ok(index_pairs)
 }
 
@@ -343,7 +367,9 @@ pub fn scan_block_offsets<R: Read + Seek>(
             .iter()
             .find(|(t, _)| *t == block_type)
             .and_then(|(_, o)| *o)
-            .ok_or_else(|| MdictError::InvalidFormat(format!("Missing {:?} block in v3.0 file", block_type)))
+            .ok_or_else(|| {
+                MdictError::InvalidFormat(format!("Missing {:?} block in v3.0 file", block_type))
+            })
     };
 
     let key_data_offset = get_offset(V3BlockType::KeyData)?;
@@ -356,5 +382,10 @@ pub fn scan_block_offsets<R: Read + Seek>(
         key_data_offset, key_index_offset, record_data_offset, record_index_offset
     );
 
-    Ok((key_data_offset, key_index_offset, record_data_offset, record_index_offset))
+    Ok((
+        key_data_offset,
+        key_index_offset,
+        record_data_offset,
+        record_index_offset,
+    ))
 }

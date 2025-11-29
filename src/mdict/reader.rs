@@ -1,12 +1,12 @@
+use log::{debug, info, trace};
 use std::fs::File;
 use std::io::{Read, Seek};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use log::{debug, info, trace};
 
-use super::format::content;
 use super::format;
+use super::format::content;
 use super::iter::{KeysIterator, RecordIterator};
 use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
@@ -29,17 +29,17 @@ use super::types::models::{
 #[derive(Debug)]
 pub struct MdictReader<T: FileType> {
     file: Arc<Mutex<File>>,
-    
+
     // Parsing-critical fields (stored directly for zero-lock access)
     version: MdictVersion,
     encoding: MdictEncoding,
     encryption_flags: EncryptionFlags,
     master_key: MasterKey,
     parsed_stylesheet: StyleSheet,
-    
+
     // Display metadata
     metadata: MdictMetadata,
-    
+
     key_blocks: Vec<BlockMeta>,
     record_blocks: Vec<BlockMeta>,
     pub total_record_decomp_size: u64,
@@ -104,7 +104,7 @@ impl<T: FileType> MdictReader<T> {
                 .or_else(|| user_encoding.map(super::utils::parse_encoding))
                 .unwrap_or(encoding)
         };
-        
+
         // Log encoding changes for clarity
         if original_encoding != final_encoding {
             debug!(
@@ -136,7 +136,9 @@ impl<T: FileType> MdictReader<T> {
         );
 
         // Parse stylesheet immediately if present (returns empty HashMap if none)
-        let parsed_stylesheet = metadata.stylesheet_raw.as_ref()
+        let parsed_stylesheet = metadata
+            .stylesheet_raw
+            .as_ref()
             .map(|s| parse_stylesheet(s))
             .unwrap_or_default();
 
@@ -281,15 +283,15 @@ impl<T: FileType> MdictReader<T> {
     /// ```
     pub fn read_record(&self, start: u64, end: u64) -> Result<RecordData<T::Record>> {
         trace!("Reading record: range=[{}..{}]", start, end);
-        
+
         let block_meta = self.find_block_by_offset(start)?;
-        
+
         let block_start = start - block_meta.decompressed_offset;
         let block_end = end - block_meta.decompressed_offset;
-        
+
         let mut buffer = Vec::new();
         self.read_and_decode_block_into(&mut buffer, *block_meta)?;
-        
+
         self.parse_record(&buffer, block_start, block_end)
     }
 
@@ -318,24 +320,28 @@ impl<T: FileType> MdictReader<T> {
     /// ```
     pub fn find_block_by_offset(&self, offset: u64) -> Result<&BlockMeta> {
         if self.record_blocks.is_empty() {
-            return Err(MdictError::InvalidFormat("No record blocks available".to_string()));
+            return Err(MdictError::InvalidFormat(
+                "No record blocks available".to_string(),
+            ));
         }
-        
-        let block_index = self.record_blocks
+
+        let block_index = self
+            .record_blocks
             .partition_point(|block| block.decompressed_offset <= offset)
             .saturating_sub(1);
-        
+
         let block_meta = self.record_blocks.get(block_index).ok_or_else(|| {
             MdictError::InvalidFormat(format!("Offset {} is out of bounds", offset))
         })?;
-        
+
         // Validate offset is within block bounds
         if offset >= block_meta.decompressed_offset + block_meta.decompressed_size {
-            return Err(MdictError::InvalidFormat(
-                format!("Offset {} exceeds block bounds", offset)
-            ));
+            return Err(MdictError::InvalidFormat(format!(
+                "Offset {} exceeds block bounds",
+                offset
+            )));
         }
-        
+
         Ok(block_meta)
     }
 
@@ -348,8 +354,19 @@ impl<T: FileType> MdictReader<T> {
     /// * `block_bytes` - Decompressed block data
     /// * `start` - Start position of the record within the block
     /// * `end` - End position of the record within the block (exclusive)
-    pub fn parse_record(&self, block_bytes: &[u8], start: u64, end: u64) -> Result<RecordData<T::Record>> {
-        content::parse_record::<T>(block_bytes, start, end, self.encoding, &self.parsed_stylesheet)
+    pub fn parse_record(
+        &self,
+        block_bytes: &[u8],
+        start: u64,
+        end: u64,
+    ) -> Result<RecordData<T::Record>> {
+        content::parse_record::<T>(
+            block_bytes,
+            start,
+            end,
+            self.encoding,
+            &self.parsed_stylesheet,
+        )
     }
 
     /// Reads, decrypts, and decompresses a block from the file.
@@ -363,14 +380,16 @@ impl<T: FileType> MdictReader<T> {
     ///
     /// # Returns
     /// The fully decompressed block data ready for record extraction.
-    pub fn read_and_decode_block_into(&self, output: &mut Vec<u8>, block_meta: BlockMeta) -> Result<()> {
+    pub fn read_and_decode_block_into(
+        &self,
+        output: &mut Vec<u8>,
+        block_meta: BlockMeta,
+    ) -> Result<()> {
         trace!(
             "Reading block: offset={}, compressed={} bytes, decompressed={} bytes",
-            block_meta.file_offset,
-            block_meta.compressed_size,
-            block_meta.decompressed_size
+            block_meta.file_offset, block_meta.compressed_size, block_meta.decompressed_size
         );
-        
+
         let mut file = self.file.lock().map_err(|_| MdictError::LockPoisoned)?;
         file.seek(std::io::SeekFrom::Start(block_meta.file_offset))?;
         let mut raw_block = vec![0u8; block_meta.compressed_size as usize];

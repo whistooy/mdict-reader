@@ -1,11 +1,11 @@
 //! Specialization logic for MDict file types (.mdx vs .mdd).
 
+use super::error::Result;
+use super::models::{RecordData, StyleSheet};
+use encoding_rs::{Encoding, UTF_16LE};
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use super::models::{RecordData, StyleSheet};
-use super::error::Result;
-use encoding_rs::{Encoding, UTF_16LE};
 
 /// Compiled regex for stylesheet substitution pattern matching.
 ///
@@ -14,9 +14,7 @@ static STYLE_PATTERN: OnceLock<Regex> = OnceLock::new();
 
 /// Returns the cached stylesheet regex pattern.
 fn style_regex() -> &'static Regex {
-    STYLE_PATTERN.get_or_init(|| {
-        Regex::new(r"`(\d+)`").expect("Invalid stylesheet regex pattern")
-    })
+    STYLE_PATTERN.get_or_init(|| Regex::new(r"`(\d+)`").expect("Invalid stylesheet regex pattern"))
 }
 
 /// Applies stylesheet substitution to text content.
@@ -36,10 +34,10 @@ fn substitute_stylesheet(text: &str, stylesheet: &HashMap<u8, (String, String)>)
 
     for cap in re.captures_iter(text) {
         let match_obj = cap.get(0).unwrap();
-        
+
         // Append text before this match
         result.push_str(&text[last_pos..match_obj.start()]);
-        
+
         // Parse style ID
         if let Ok(style_id) = cap[1].parse::<u8>() {
             if let Some((open_tag, close_tag)) = stylesheet.get(&style_id) {
@@ -53,14 +51,14 @@ fn substitute_stylesheet(text: &str, stylesheet: &HashMap<u8, (String, String)>)
                 current_closing_tag.clear();
             }
         }
-        
+
         last_pos = match_obj.end();
     }
-    
+
     // Append remaining text and final closing tag
     result.push_str(&text[last_pos..]);
     result.push_str(&current_closing_tag);
-    
+
     result
 }
 
@@ -152,10 +150,7 @@ impl FileType for Mdd {
 
         let redirect_pattern: Vec<u8> = if encoding == UTF_16LE {
             // UTF-16LE encoding of "@@@LINK="
-            REDIRECT_PREFIX
-                .iter()
-                .flat_map(|&b| vec![b, 0u8])
-                .collect()
+            REDIRECT_PREFIX.iter().flat_map(|&b| vec![b, 0u8]).collect()
         } else {
             // UTF-8 or other single-byte encodings
             REDIRECT_PREFIX.to_vec()

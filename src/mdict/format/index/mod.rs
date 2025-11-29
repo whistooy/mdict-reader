@@ -4,11 +4,11 @@
 //! block indexes of an MDict file. It dispatches to the appropriate
 //! version-specific parser based on the `MdictVersion`.
 
-use std::fs::File;
 use crate::mdict::types::error::Result;
 use crate::mdict::types::models::{
-    BlockMeta, EncryptionFlags, MdictEncoding, MdictVersion, MasterKey,
+    BlockMeta, EncryptionFlags, MasterKey, MdictEncoding, MdictVersion,
 };
+use std::fs::File;
 
 pub mod common;
 pub mod v1v2;
@@ -37,6 +37,8 @@ pub fn parse(
 ) -> Result<ParseResult> {
     match version {
         MdictVersion::V3 => v3::parse(file, version, encoding, master_key),
-        MdictVersion::V1 | MdictVersion::V2 => v1v2::parse(file, version, encoding, encryption_flags, master_key),
+        MdictVersion::V1 | MdictVersion::V2 => {
+            v1v2::parse(file, version, encoding, encryption_flags, master_key)
+        }
     }
 }

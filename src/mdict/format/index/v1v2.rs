@@ -9,14 +9,16 @@
 //! 5. Record block index (unencrypted)
 //! 6. Record blocks (actual data)
 
+use adler2::adler32_slice;
+use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
+use log::{debug, info};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt, ByteOrder};
-use adler2::adler32_slice;
-use log::{debug, info};
 
+use super::ParseResult;
+use super::common;
 use crate::mdict::{
-    codec::{crypto, compression},
+    codec::{compression, crypto},
     types::{
         error::{MdictError, Result},
         models::{
@@ -26,8 +28,6 @@ use crate::mdict::{
     },
     utils,
 };
-use super::common;
-use super::ParseResult;
 
 /// Parses the complete index structure for v1/v2 MDict files.
 ///
@@ -49,16 +49,28 @@ pub fn parse(
     master_key: MasterKey,
 ) -> Result<ParseResult> {
     // Parse key block index
-    let (key_blocks, num_entries) =
-        parse_block_info(file, version, encoding, encryption_flags, master_key, BlockType::Key)?;
+    let (key_blocks, num_entries) = parse_block_info(
+        file,
+        version,
+        encoding,
+        encryption_flags,
+        master_key,
+        BlockType::Key,
+    )?;
 
     // Skip past all key block data to reach record section
     let total_key_blocks_size: u64 = key_blocks.iter().map(|b| b.compressed_size).sum();
     file.seek(SeekFrom::Current(total_key_blocks_size as i64))?;
 
     // Parse record block index
-    let (record_blocks, _) =
-        parse_block_info(file, version, encoding, encryption_flags, master_key, BlockType::Record)?;
+    let (record_blocks, _) = parse_block_info(
+        file,
+        version,
+        encoding,
+        encryption_flags,
+        master_key,
+        BlockType::Record,
+    )?;
 
     let total_record_decomp_size: u64 = record_blocks.iter().map(|b| b.decompressed_size).sum();
 
@@ -68,7 +80,12 @@ pub fn parse(
         record_blocks.len()
     );
 
-    Ok((key_blocks, record_blocks, total_record_decomp_size, num_entries))
+    Ok((
+        key_blocks,
+        record_blocks,
+        total_record_decomp_size,
+        num_entries,
+    ))
 }
 
 /// Parses block metadata for either key or record blocks.
@@ -106,8 +123,13 @@ fn parse_block_info<R: Seek + Read>(
     // Extract individual block metadata from the decompressed index
     info!("Extracting block boundaries from {} index", block_type);
     let initial_file_offset = file.stream_position()?;
-    let (blocks, total_entries) =
-        extract_block_metas(&index_data, version, encoding, block_type, initial_file_offset)?;
+    let (blocks, total_entries) = extract_block_metas(
+        &index_data,
+        version,
+        encoding,
+        block_type,
+        initial_file_offset,
+    )?;
 
     // Validate block count matches the index header
     if blocks.len() as u64 != num_blocks {
@@ -127,7 +149,11 @@ fn parse_block_info<R: Seek + Read>(
         });
     }
 
-    info!("{} index metadata: {} blocks defined", block_type, blocks.len());
+    info!(
+        "{} index metadata: {} blocks defined",
+        block_type,
+        blocks.len()
+    );
     Ok((blocks, num_entries))
 }
 
@@ -156,10 +182,9 @@ fn extract_block_metas(
     while !reader.is_empty() {
         // Key blocks include entry count and key range
         if block_type == BlockType::Key {
-            let num_entries_in_block =
-                utils::read_number(&mut reader, version.number_width())?;
+            let num_entries_in_block = utils::read_number(&mut reader, version.number_width())?;
             total_entries += num_entries_in_block;
-            
+
             // Skip first and last key texts (boundary keys used for range queries, not needed for sequential access)
             common::skip_text(&mut reader, version, encoding)?;
             common::skip_text(&mut reader, version, encoding)?;
@@ -175,7 +200,7 @@ fn extract_block_metas(
             file_offset,
             decompressed_offset,
         });
-        
+
         // Advance offsets for next block
         file_offset += compressed_size;
         decompressed_offset += decompressed_size;
@@ -183,7 +208,6 @@ fn extract_block_metas(
 
     Ok((blocks, total_entries))
 }
-
 
 /// Parses the key block index header and decompresses the index data.
 ///
@@ -301,9 +325,10 @@ fn decompress_key_index(
     if let Some(decomp_len) = decomp_len {
         debug!(
             "Processing v2.x key index (compressed: {} bytes, decompressed: {} bytes)",
-            compressed.len(), decomp_len
+            compressed.len(),
+            decomp_len
         );
-        
+
         // Decrypt if key index encryption is enabled
         let payload_start = 8;
         if encryption_flags.encrypt_key_index {
@@ -315,10 +340,16 @@ fn decompress_key_index(
         let payload = &compressed[payload_start..];
 
         // Read compression type from header and decompress
-        let compression_type = CompressionType::try_from(LittleEndian::read_u32(&compressed[0..4]) as u8)?;
+        let compression_type =
+            CompressionType::try_from(LittleEndian::read_u32(&compressed[0..4]) as u8)?;
         debug!("Decompressing key index using {:?}", compression_type);
         let mut decompressed = Vec::new();
-        compression::decompress_payload_into(&mut decompressed, payload, compression_type, decomp_len)?;
+        compression::decompress_payload_into(
+            &mut decompressed,
+            payload,
+            compression_type,
+            decomp_len,
+        )?;
 
         // Verify checksum to ensure data integrity
         let checksum_expected = BigEndian::read_u32(&compressed[4..8]);
@@ -329,11 +360,17 @@ fn decompress_key_index(
                 actual: checksum_actual,
             });
         }
-        debug!("Key index parsed successfully: {} bytes", decompressed.len());
+        debug!(
+            "Key index parsed successfully: {} bytes",
+            decompressed.len()
+        );
         Ok(decompressed)
     } else {
         // V1 does not compress the key index
-        debug!("Processing v1.x key index ({} bytes, uncompressed)", compressed.len());
+        debug!(
+            "Processing v1.x key index ({} bytes, uncompressed)",
+            compressed.len()
+        );
         Ok(compressed.to_vec())
     }
 }
