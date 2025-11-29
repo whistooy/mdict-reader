@@ -5,9 +5,9 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use super::format;
-use super::format::content;
 use super::iter::{KeysIterator, RecordIterator};
+use super::layout;
+use super::layout::blocks;
 use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
 use super::types::models::{
@@ -88,7 +88,7 @@ impl<T: FileType> MdictReader<T> {
             encryption_flags,
             master_key,
             metadata,
-        } = format::header::parse(&mut file, passcode)?;
+        } = layout::header::parse(&mut file, passcode)?;
 
         // Step 2: Apply version-specific encoding rules
         let original_encoding = encoding;
@@ -125,7 +125,7 @@ impl<T: FileType> MdictReader<T> {
         // Step 3: Parse index blocks (version-specific)
         debug!("Parsing block indexes");
         let (key_blocks, record_blocks, total_record_decomp_size, num_entries) =
-            format::index::parse(&mut file, version, encoding, encryption_flags, master_key)?;
+            layout::index::parse(&mut file, version, encoding, encryption_flags, master_key)?;
 
         info!(
             "{} file loaded: {} entries, {} key blocks, {} record blocks",
@@ -360,7 +360,7 @@ impl<T: FileType> MdictReader<T> {
         start: u64,
         end: u64,
     ) -> Result<RecordData<T::Record>> {
-        content::parse_record::<T>(
+        blocks::parse_record::<T>(
             block_bytes,
             start,
             end,
@@ -395,7 +395,7 @@ impl<T: FileType> MdictReader<T> {
         let mut raw_block = vec![0u8; block_meta.compressed_size as usize];
         file.read_exact(&mut raw_block)?;
 
-        content::decode_block_into(
+        blocks::decode_block_into(
             output,
             &mut raw_block,
             block_meta.decompressed_size,

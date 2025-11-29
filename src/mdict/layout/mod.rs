@@ -7,7 +7,7 @@
 //!
 //! - [`header`]: Parses the XML header containing metadata and settings
 //! - [`index`]: Parses key/record block indexes for all MDict versions
-//! - [`content`]: Decodes and decompresses individual content blocks
+//! - [`blocks`]: Decodes and decompresses individual data blocks
 //!
 //! # Architecture
 //!
@@ -20,12 +20,12 @@
 //! │  (version-      │
 //! │   specific)     │
 //! ├─────────────────┤
-//! │  Content Blocks │ ← content::decode_block_into()
+//! │  Data Blocks    │ ← blocks::decode_block_into()
 //! │  (compressed,   │
 //! │   encrypted)    │
 //! └─────────────────┘
 //! ```
 
-pub mod content;
+pub mod blocks;
 pub mod header;
 pub mod index;

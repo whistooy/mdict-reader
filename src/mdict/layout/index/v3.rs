@@ -13,7 +13,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
 use super::common;
-use crate::mdict::format::content;
+use crate::mdict::layout::blocks;
 use crate::mdict::{
     types::{
         error::{MdictError, Result},
@@ -216,7 +216,7 @@ fn parse_index<R: Read + Seek>(
 
         // Decompress and decrypt if necessary
         let mut decompressed = Vec::new();
-        content::decode_block_into(
+        blocks::decode_block_into(
             &mut decompressed,
             &mut compressed,
             decompressed_size,

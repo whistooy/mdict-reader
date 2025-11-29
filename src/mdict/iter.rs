@@ -22,7 +22,7 @@
 
 use std::iter::Peekable;
 
-use super::format::content;
+use super::layout::blocks;
 use super::reader::MdictReader;
 use super::types::error::{MdictError, Result};
 use super::types::filetypes::FileType;
@@ -112,7 +112,7 @@ impl<'a, T: FileType> KeysIterator<'a, T> {
         let before = slice.len();
 
         let result =
-            content::read_next_key_entry(&mut slice, self.reader.version(), self.reader.encoding());
+            blocks::read_next_key_entry(&mut slice, self.reader.version(), self.reader.encoding());
 
         let after = slice.len();
         self.cached_block_pos += before - after;

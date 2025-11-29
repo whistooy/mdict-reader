@@ -11,10 +11,10 @@
 //!     -   Exposes `MdictReader` for dictionary lookups.
 //!     -   Provides iterators for keys and records.
 //!
-//! 2.  **Format (`format`)**: High-level file format parsing.
+//! 2.  **Layout (`layout`)**: High-level parsing of the file layout.
 //!     -   `header`: Parses the main dictionary header.
 //!     -   `index`: Handles version-specific index block structures (`v1v2`, `v3`).
-//!     -   `content`: Parses the actual content of a data block (keys or records).
+//!     -   `blocks`: Parses and decodes key/record data blocks.
 //!
 //! 3.  **Codec (`codec`)**: Pure, low-level data transformation primitives.
 //!     -   Handles decryption (`crypto`), decompression (`compression`), and text encoding.
@@ -29,7 +29,7 @@
 //!   └──────────────────┘
 //!            │
 //!   ┌──────────────────┐
-//!   │      Format      │ (header, index, content)
+//!   │      Layout      │ (header, index, blocks)
 //!   └──────────────────┘
 //!            │
 //!   ┌──────────────────┐
@@ -43,8 +43,8 @@ pub mod types;
 // Low-level encoding/decoding primitives
 mod codec;
 
-// High-level, version-specific format parsing
-pub mod format;
+// High-level, version-specific layout parsing
+pub mod layout;
 
 // High-level public API
 pub mod iter;
