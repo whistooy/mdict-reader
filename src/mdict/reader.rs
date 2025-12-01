@@ -63,6 +63,7 @@ impl<T: FileType> MdictReader<T> {
     /// * `path` - Path to the MDict file (.mdx or .mdd)
     /// * `passcode` - Optional decryption credentials as `(regcode_hex, user_email)`
     /// * `user_encoding` - Optional encoding override (only applies to MDX v1/v2 files)
+    /// * `substitute_stylesheet` - Whether to expand stylesheet markers (MDX only)
     ///
     /// # Errors
     /// Returns [`MdictError`] if:
@@ -75,6 +76,7 @@ impl<T: FileType> MdictReader<T> {
         path: impl AsRef<Path>,
         passcode: Option<(&str, &str)>,
         user_encoding: Option<&str>,
+        substitute_stylesheet: bool,
     ) -> Result<Self> {
         let path = path.as_ref();
         info!("Opening {} file: {}", T::DEBUG_NAME, path.display());
@@ -135,12 +137,17 @@ impl<T: FileType> MdictReader<T> {
             record_blocks.len()
         );
 
-        // Parse stylesheet immediately if present (returns empty HashMap if none)
-        let parsed_stylesheet = metadata
-            .stylesheet_raw
-            .as_ref()
-            .map(|s| parse_stylesheet(s))
-            .unwrap_or_default();
+        // Parse stylesheet immediately if present and substitution is enabled
+        // (returns empty HashMap if none)
+        let parsed_stylesheet = if substitute_stylesheet {
+            metadata
+                .stylesheet_raw
+                .as_ref()
+                .map(|s| parse_stylesheet(s))
+                .unwrap_or_default()
+        } else {
+            StyleSheet::default()
+        };
 
         Ok(Self {
             file: Arc::new(Mutex::new(file)),
@@ -241,7 +248,7 @@ impl<T: FileType> MdictReader<T> {
     /// # Example
     /// ```no_run
     /// # use mdict_reader::{MdictReader, Mdx, RecordData};
-    /// # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None).unwrap();
+    /// # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None, true).unwrap();
     /// for result in reader.iter_records() {
     ///     let (key, record_data) = result.unwrap();
     ///     match record_data {
@@ -275,7 +282,7 @@ impl<T: FileType> MdictReader<T> {
     /// # Example
     /// ```no_run
     /// # use mdict_reader::{MdictReader, Mdx, RecordData};
-    /// # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None).unwrap();
+    /// # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None, true).unwrap();
     /// match reader.read_record(0, 100).unwrap() {
     ///     RecordData::Content(text) => println!("Content: {}", text),
     ///     RecordData::Redirect(target) => println!("Redirects to: {}", target),
@@ -313,7 +320,7 @@ impl<T: FileType> MdictReader<T> {
     /// # Example
     /// ```no_run
     /// # use mdict_reader::{MdictReader, Mdx};
-    /// # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None).unwrap();
+    /// # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None, true).unwrap();
     /// // Find which block contains offset 1000
     /// let block_meta = reader.find_block_by_offset(1000).unwrap();
     /// println!("Block at file offset: {}", block_meta.file_offset);

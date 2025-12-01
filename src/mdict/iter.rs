@@ -9,7 +9,7 @@
 //! # Example
 //! ```no_run
 //! # use mdict_reader::{MdictReader, Mdx, RecordData};
-//! # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None).unwrap();
+//! # let reader = MdictReader::<Mdx>::new("dict.mdx", None, None, true).unwrap();
 //! // Iterate through all definitions
 //! for result in reader.iter_records() {
 //!     let (key, record_data) = result.unwrap();

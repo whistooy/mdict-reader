@@ -42,6 +42,9 @@ struct SharedArgs {
     /// Override the text encoding for older (v1/v2) .mdx files. Ignored for v3 files.
     #[arg(long, global = true, value_name = "ENCODING")]
     encoding: Option<String>,
+    /// Substitute stylesheet markers with tags in MDX content (opt-in).
+    #[arg(long, global = true)]
+    substitute_stylesheet: bool,
 }
 
 #[derive(Args, Debug)]
@@ -173,9 +176,13 @@ fn run_extract(args: ExtractArgs) {
         let mdict = open_mdict_or_exit(&path, &args.shared);
         match (task, mdict) {
             (Task::Mdx, Mdict::Mdx(reader)) => {
-                if let Err(e) =
-                    extract_mdx_content(reader, &path, args.format, args.output.as_deref())
-                {
+                if let Err(e) = extract_mdx_content(
+                    reader,
+                    &path,
+                    args.format,
+                    args.output.as_deref(),
+                    args.shared.substitute_stylesheet,
+                ) {
                     eprintln!(
                         "   ERROR: Failed to extract MDX content from {}: {}",
                         path.display(),
@@ -222,6 +229,7 @@ fn extract_mdx_content(
     path: &Path,
     format: Format,
     output_dir: Option<&Path>,
+    substitute_stylesheet: bool,
 ) -> Result<(), MdictError> {
     println!("\n-> Extracting MDX content from {}...", path.display());
 
@@ -273,7 +281,9 @@ fn extract_mdx_content(
 
     println!("   SUCCESS: Entries written to {}", out_path.display());
 
-    if let Some(stylesheet) = &reader.metadata().stylesheet_raw {
+    // Only write stylesheet file when substitution is disabled
+    // (when enabled, styles are already inlined in the content)
+    if !substitute_stylesheet && let Some(stylesheet) = &reader.metadata().stylesheet_raw {
         let style_path = output_base.with_file_name(format!(
             "{}_style.css",
             output_base
@@ -357,7 +367,12 @@ fn open_mdict_or_exit(file: &Path, args: &SharedArgs) -> Mdict {
             eprint_and_exit("Invalid passcode format. Expected 'REGCODE_HEX,EMAIL'.")
         })
     });
-    match Mdict::open(file, passcode_ref, args.encoding.as_deref()) {
+    match Mdict::open(
+        file,
+        passcode_ref,
+        args.encoding.as_deref(),
+        args.substitute_stylesheet,
+    ) {
         Ok(mdict) => mdict,
         Err(e) => eprint_and_exit(format!("Failed to open '{}': {}", file.display(), e)),
     }

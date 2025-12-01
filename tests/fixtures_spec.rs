@@ -153,7 +153,7 @@ fn assert_mdx_fixture(mdx_name: &str, source_name: &str, duplicates: &[(&str, us
     let source_path = fixture_path(&["tests", "fixtures_src", source_name]);
 
     let expected_counts = load_source_counts(&source_path);
-    let reader = MdictReader::<Mdx>::new(&mdx_path, None, None).expect("open mdx");
+    let reader = MdictReader::<Mdx>::new(&mdx_path, None, None, true).expect("open mdx");
 
     let records: Vec<(String, RecordData<String>)> = reader
         .iter_records()
@@ -302,7 +302,7 @@ fn load_expected_resources() -> HashMap<String, Vec<u8>> {
 fn assert_mdd_fixture(mdd_name: &str) {
     let mdd_path = fixture_path(&["tests", mdd_name]);
     let expected = load_expected_resources();
-    let reader = MdictReader::<Mdd>::new(&mdd_path, None, None).expect("open mdd");
+    let reader = MdictReader::<Mdd>::new(&mdd_path, None, None, true).expect("open mdd");
 
     assert!(
         reader.num_record_blocks() > 1,
@@ -347,6 +347,38 @@ fn mdx_fixtures_match_sources() {
     for (mdx, source, duplicates) in MDX_FIXTURES {
         assert_mdx_fixture(mdx, source, duplicates);
     }
+}
+
+#[test]
+fn mdx_stylesheet_substitution_can_be_disabled() {
+    let mdx_path = fixture_path(&["tests", "utf8-2.0.mdx"]);
+    let reader =
+        MdictReader::<Mdx>::new(&mdx_path, None, None, false).expect("open mdx without styles");
+
+    let style_record = reader
+        .iter_records()
+        .find_map(|res| match res {
+            Ok((key, record)) if key == "style-demo" => Some(record),
+            Ok(_) => None,
+            Err(e) => panic!("record error: {}", e),
+        })
+        .expect("style-demo entry");
+
+    let content = match style_record {
+        RecordData::Content(body) => body,
+        RecordData::Redirect(target) => {
+            panic!("style-demo unexpectedly redirected to {}", target)
+        }
+    };
+
+    assert!(
+        content.contains('`'),
+        "expected raw stylesheet markers when substitution is disabled"
+    );
+    assert!(
+        !content.contains("<b>"),
+        "stylesheet substitution should be skipped when disabled"
+    );
 }
 
 #[test]

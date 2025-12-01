@@ -13,7 +13,7 @@
 //! ```no_run
 //! use mdict_reader::Mdict;
 //!
-//! let mdict = Mdict::open("path/to/dictionary.mdx", None, None).unwrap();
+//! let mdict = Mdict::open("path/to/dictionary.mdx", None, None, true).unwrap();
 //!
 //! if let Mdict::Mdx(reader) = mdict {
 //!     for result in reader.iter_keys() {
@@ -31,7 +31,7 @@
 //! use mdict_reader::{MdictReader, RecordData, Mdx};
 //!
 //! // The type parameter `Mdx` specializes the reader for dictionary files.
-//! let mdx_reader = MdictReader::<Mdx>::new("path/to/dictionary.mdx", None, None).unwrap();
+//! let mdx_reader = MdictReader::<Mdx>::new("path/to/dictionary.mdx", None, None, true).unwrap();
 //!
 //! // The iterator yields `RecordData`, which can be content or a redirect.
 //! for result in mdx_reader.iter_records() {
@@ -87,19 +87,21 @@ impl Mdict {
     /// * `path` - File path to the .mdx or .mdd file
     /// * `passcode` - Optional (`regcode_hex`, `user_email`) tuple for encrypted files
     /// * `user_encoding` - Optional encoding override (only effective for MDX files)
+    /// * `substitute_stylesheet` - Apply stylesheet substitution for MDX content (ignored for MDD)
     pub fn open(
         path: impl AsRef<Path>,
         passcode: Option<(&str, &str)>,
         user_encoding: Option<&str>,
+        substitute_stylesheet: bool,
     ) -> Result<Self> {
         let path = path.as_ref();
 
         match path.extension().and_then(|s| s.to_str()) {
             Some(ext) if ext.eq_ignore_ascii_case("mdx") => Ok(Mdict::Mdx(
-                MdictReader::<Mdx>::new(path, passcode, user_encoding)?,
+                MdictReader::<Mdx>::new(path, passcode, user_encoding, substitute_stylesheet)?,
             )),
             Some(ext) if ext.eq_ignore_ascii_case("mdd") => Ok(Mdict::Mdd(
-                MdictReader::<Mdd>::new(path, passcode, user_encoding)?,
+                MdictReader::<Mdd>::new(path, passcode, user_encoding, substitute_stylesheet)?,
             )),
             _ => Err(MdictError::InvalidFormat(
                 "File must have a .mdx or .mdd extension for auto-detection".to_string(),
