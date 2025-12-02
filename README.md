@@ -1,5 +1,9 @@
 # mdict-reader
 
+[![CI](https://github.com/whistooy/mdict-reader/workflows/CI/badge.svg)](https://github.com/whistooy/mdict-reader/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org)
+
 A Rust library and command-line tool for reading MDict (`.mdx` and `.mdd`) dictionary files.
 
 The project can:
