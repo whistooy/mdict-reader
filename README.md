@@ -1,6 +1,7 @@
 # mdict-reader
 
 [![CI](https://github.com/whistooy/mdict-reader/workflows/CI/badge.svg)](https://github.com/whistooy/mdict-reader/actions)
+[![Pre-release](https://img.shields.io/github/v/release/whistooy/mdict-reader?include_prereleases&label=pre-release)](https://github.com/whistooy/mdict-reader/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org)
 
