@@ -1,0 +1,10 @@
+# Prevent Git from converting line endings in binary test fixtures
+tests/fixtures_src/resources/* binary
+tests/*.mdd binary
+tests/*.mdx binary
+
+# Ensure test fixture binaries are never modified
+*.bin binary
+*.wav binary
+*.png binary
+*.PNG binary
